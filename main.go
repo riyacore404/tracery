@@ -38,6 +38,7 @@ func main() {
 		&pretty, "pretty", true, "human-readable log output")
 
 	rootCmd.AddCommand(countCmd)
+	rootCmd.AddCommand(latencyCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
