@@ -1,0 +1,7 @@
+tracery
+*.o
+*.bak
+mini/libbpf-bootstrap/
+mini/02-bpf-hello/
+mini/03-ring-buffer/
+mini/04-latency/
