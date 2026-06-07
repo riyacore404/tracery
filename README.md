@@ -15,6 +15,8 @@
 [![Platform](https://img.shields.io/badge/platform-Linux%205.8%2B-lightgrey.svg)](https://kernel.org)
 [![CI](https://github.com/riyacore404/tracery/actions/workflows/ci.yaml/badge.svg)](https://github.com/riyacore404/tracery/actions/workflows/ci.yaml)
 
+[![Demo](https://asciinema.org/a/RZWnKBfpxltNLISn.svg)](https://asciinema.org/a/RZWnKBfpxltNLISn)
+
 Tracery attaches eBPF probes to running Linux processes and streams syscall
 activity, latency measurements, memory events, and scheduler activity in
 real time.
@@ -22,8 +24,6 @@ real time.
 Unlike `strace`, Tracery does not stop the target process on every syscall.
 Instrumentation runs inside the kernel through eBPF, enabling low-overhead
 observability without code changes or restarts.
-
-[![Demo]( https://asciinema.org/a/88dwSxe1okYYG4Ri.svg)]( https://asciinema.org/a/88dwSxe1okYYG4Ri)
 
 ---
 
