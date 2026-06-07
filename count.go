@@ -166,8 +166,8 @@ Examples:
 		if pid == 0 {
 			return fmt.Errorf("--pid is required (e.g. tracery count --pid 1234)")
 		}
-		if output != "table" && output != "json" {
-			return fmt.Errorf("--output must be 'table' or 'json', got %q", output)
+		if output != "table" && output != "json" && output != "csv" {
+			return fmt.Errorf("--output must be 'table', 'json', or 'csv', got %q", output)
 		}
 
 		log.Info().
@@ -211,6 +211,11 @@ Examples:
 					if err := printJSON(counts, pid, elapsed); err != nil {
 						log.Error().Err(err).Msg("failed to write JSON output")
 					}
+				case "csv":
+					fmt.Printf("pid,elapsed_seconds,syscall_nr,syscall_name,count\n")
+					for _, c := range counts {
+						fmt.Printf("%d,%d,%d,%s,%d\n", pid, elapsed, c.Nr, c.Name, c.Count)
+					}
 				default:
 					printTable(counts, pid, elapsed)
 				}
@@ -221,8 +226,8 @@ Examples:
 
 func init() {
 	countCmd.Flags().Uint32("pid", 0, "PID of process to trace (required)")
-	countCmd.Flags().String("output", "table",
-		"output format: table or json")
+	countCmd.Flags().String("output", "table", 
+		"output format: table, json, or csv")
 	countCmd.Flags().Int("interval", 1,
 		"how often to refresh the table in seconds")
 }
