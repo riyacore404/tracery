@@ -25,30 +25,42 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
-          args: --exclude-dirs mini
 
   bpf-build:
-    name: BPF compile (kernel ${{ matrix.kernel }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        kernel: ["5.15", "6.1"]
+    name: BPF compile
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
 
       - name: Install build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang-16 llvm-16 libbpf-dev linux-headers-$(uname -r)
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-16 100
+          sudo apt-get install -y \
+            clang-14 llvm-14 \
+            libbpf-dev \
+            libelf-dev \
+            linux-headers-$(uname -r) \
+            linux-tools-common \
+            linux-tools-$(uname -r) || true
+          sudo update-alternatives \
+            --install /usr/bin/clang clang /usr/bin/clang-14 100
+          echo "CLANG=clang-14" >> $GITHUB_ENV
 
       - name: Generate vmlinux.h
         run: |
-          sudo apt-get install -y linux-tools-$(uname -r) || true
-          bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          if [ -f /sys/kernel/btf/vmlinux ]; then
+            bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          else
+            echo "BTF not available — using pre-generated vmlinux.h"
+          fi
 
       - name: Build BPF objects
-        run: make bpf
+        run: make bpf CLANG=${CLANG:-clang-14}
 
       - name: Build Go binary
         run: make build
