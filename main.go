@@ -40,6 +40,7 @@ func main() {
 	rootCmd.AddCommand(countCmd)
 	rootCmd.AddCommand(latencyCmd)
 	rootCmd.AddCommand(eventsCmd)
+	rootCmd.AddCommand(traceCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
