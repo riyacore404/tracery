@@ -6,7 +6,3 @@ linters:
     - errcheck
     - govet
     - staticcheck
-
-run:
-  exclude-dirs:
-    - mini
