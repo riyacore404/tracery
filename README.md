@@ -1,3 +1,11 @@
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Component design, data flow, BPF internals |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to add probe types, submit PRs |
+| [examples/](examples/) | Ready-to-use YAML probe configs |
+
 # Tracery
 
 > An eBPF-based Linux syscall and performance tracer built with C and Go.
@@ -13,6 +21,13 @@ real time.
 Unlike `strace`, Tracery does not stop the target process on every syscall.
 Instrumentation runs inside the kernel through eBPF, enabling low-overhead
 observability without code changes or restarts.
+
+[![Demo]( https://asciinema.org/a/88dwSxe1okYYG4Ri.svg)]( https://asciinema.org/a/88dwSxe1okYYG4Ri)
+
+---
+
+## Quick Start
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/youruser/tracery/main/setup.sh)
 
 ---
 
