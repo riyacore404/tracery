@@ -6,6 +6,7 @@ require (
 	github.com/cilium/ebpf v0.16.0
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
