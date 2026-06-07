@@ -7,6 +7,6 @@ linters:
     - govet
     - staticcheck
 
-issues:
+run:
   exclude-dirs:
     - mini
