@@ -71,7 +71,9 @@ func NewTracer(bpfObjPath string, targetPID uint32) (*Tracer, error) {
 func (t *Tracer) Close() {
 	log.Debug().Msg("detaching BPF program from kernel")
 	if t.tracepoint != nil {
-		t.tracepoint.Close()
+		if err := t.tracepoint.Close(); err != nil {
+			log.Warn().Err(err).Msg("error closing tracepoint")
+		}
 	}
 	if t.collection != nil {
 		t.collection.Close()
