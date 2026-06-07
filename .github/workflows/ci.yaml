@@ -22,9 +22,7 @@ jobs:
         run: go test ./...
 
       - name: Run lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v2.12.2
+        uses: golangci/golangci-lint-action@v7
 
   bpf-build:
     name: BPF compile
