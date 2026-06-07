@@ -1,0 +1,97 @@
+# examples/syscall-audit.yaml
+#
+# Syscall Audit Probe
+# -------------------
+# Traces ALL syscalls made by a target process, filtering for security-relevant
+# calls: file opens, network connects, process spawns, and privilege escalations.
+#
+# Use case: Security review — detect unexpected syscalls in a service.
+#
+# Usage:
+#   tracery trace --config examples/syscall-audit.yaml --pid $(pgrep nginx)
+#   tracery trace --config examples/syscall-audit.yaml --pid 1234 --output json > audit.json
+#
+# Expected output: A live event table showing syscall name, args, return value,
+# and timestamp. JSON output is suitable for piping into a SIEM or log store.
+
+name: syscall-audit
+description: "Security-oriented syscall audit for a target PID"
+version: "1"
+
+probes:
+  - name: file-opens
+    type: tracepoint
+    event: syscalls:sys_enter_openat
+    fields:
+      - name: filename
+        type: string
+        source: args.filename
+      - name: flags
+        type: uint32
+        source: args.flags
+      - name: mode
+        type: uint32
+        source: args.mode
+    filter:
+      # Flag 64 = O_CREAT; flag 512 = O_TRUNC — flag new file creation and truncation
+      expr: "flags & 64 || flags & 512"
+    output:
+      label: "FILE_OPEN"
+      format: "{{.filename}} flags=0x{{printf \"%x\" .flags}}"
+
+  - name: network-connect
+    type: tracepoint
+    event: syscalls:sys_enter_connect
+    fields:
+      - name: fd
+        type: int
+        source: args.fd
+      - name: addrlen
+        type: uint32
+        source: args.addrlen
+    output:
+      label: "NET_CONNECT"
+      format: "fd={{.fd}} addrlen={{.addrlen}}"
+
+  - name: process-exec
+    type: tracepoint
+    event: syscalls:sys_enter_execve
+    fields:
+      - name: filename
+        type: string
+        source: args.filename
+    output:
+      label: "EXEC"
+      format: "{{.filename}}"
+
+  - name: privilege-check
+    type: tracepoint
+    event: syscalls:sys_enter_setuid
+    fields:
+      - name: uid
+        type: uint32
+        source: args.uid
+    output:
+      label: "SETUID"
+      format: "uid={{.uid}}"
+
+  - name: ptrace-detect
+    type: tracepoint
+    event: syscalls:sys_enter_ptrace
+    fields:
+      - name: request
+        type: uint64
+        source: args.request
+      - name: pid
+        type: uint64
+        source: args.pid
+    output:
+      label: "PTRACE"
+      format: "request={{.request}} target_pid={{.pid}}"
+
+output:
+  format: table        # table | json | csv
+  timestamp: true
+  include_pid: true
+  include_comm: true   # process name (comm field)
+  fields: [label, comm, pid, timestamp, format]

@@ -1,0 +1,135 @@
+# examples/memory-profiling.yaml
+#
+# Memory Profiling Probe
+# ----------------------
+# Traces mmap, munmap, brk, and page fault events for a target process.
+# Surfaces memory growth patterns, large anonymous mappings, and page fault
+# hotspots — without stopping the process or using Valgrind.
+#
+# Use case: Diagnosing memory growth in production services. Valgrind is
+# 10-50x slower than the target; this probe adds <1% overhead.
+#
+# Usage:
+#   tracery trace --config examples/memory-profiling.yaml --pid $(pgrep myservice)
+#   tracery trace --config examples/memory-profiling.yaml --pid 1234 --output json | \
+#       jq 'select(.label == "MMAP_LARGE")'
+#
+# Interesting signals to look for:
+#   - Repeated large anonymous mmaps (size > 1MB) → possible memory leak
+#   - High page fault rate with no corresponding munmap → RSS growth
+#   - brk() expanding repeatedly → heap fragmentation
+
+name: memory-profiling
+description: "Memory event tracing: mmap, munmap, brk, page faults"
+version: "1"
+
+probes:
+  - name: mmap-alloc
+    type: tracepoint
+    event: syscalls:sys_enter_mmap
+    fields:
+      - name: addr
+        type: uint64
+        source: args.addr
+      - name: len
+        type: size_t
+        source: args.len
+      - name: prot
+        type: uint32
+        source: args.prot
+      - name: flags
+        type: uint32
+        source: args.flags
+      - name: fd
+        type: int
+        source: args.fd
+    filter:
+      # PROT_WRITE=2, MAP_ANONYMOUS=32 — flag anonymous writable mappings
+      expr: "flags & 32 && prot & 2"
+    output:
+      label: "MMAP_ANON"
+      format: "len={{.len}} prot=0x{{printf \"%x\" .prot}} flags=0x{{printf \"%x\" .flags}}"
+    alert:
+      # Surface large anonymous mappings in a separate label
+      condition: "len > 1048576"  # 1MB
+      label: "MMAP_LARGE"
+
+  - name: mmap-file
+    type: tracepoint
+    event: syscalls:sys_enter_mmap
+    fields:
+      - name: len
+        type: size_t
+        source: args.len
+      - name: fd
+        type: int
+        source: args.fd
+      - name: offset
+        type: int64
+        source: args.offset
+    filter:
+      expr: "fd >= 0"            # fd != -1 means file-backed mapping
+    output:
+      label: "MMAP_FILE"
+      format: "fd={{.fd}} len={{.len}} offset={{.offset}}"
+
+  - name: munmap
+    type: tracepoint
+    event: syscalls:sys_enter_munmap
+    fields:
+      - name: addr
+        type: uint64
+        source: args.addr
+      - name: len
+        type: size_t
+        source: args.len
+    output:
+      label: "MUNMAP"
+      format: "addr=0x{{printf \"%x\" .addr}} len={{.len}}"
+
+  - name: brk
+    type: tracepoint
+    event: syscalls:sys_enter_brk
+    fields:
+      - name: brk
+        type: uint64
+        source: args.brk
+    output:
+      label: "BRK"
+      format: "brk=0x{{printf \"%x\" .brk}}"
+
+  - name: page-fault
+    type: tracepoint
+    event: exceptions:page_fault_user
+    fields:
+      - name: address
+        type: uint64
+        source: args.address
+      - name: error_code
+        type: uint64
+        source: args.error_code
+    filter:
+      # error_code bit 1 = write fault; bit 0 = protection fault (not present)
+      expr: "error_code & 1 == 0"   # only not-present (new allocation) faults
+    output:
+      label: "PAGE_FAULT"
+      format: "addr=0x{{printf \"%x\" .address}} err=0x{{printf \"%x\" .error_code}}"
+
+output:
+  format: table
+  timestamp: true
+  # Summary statistics printed at exit (Ctrl+C)
+  summary:
+    enabled: true
+    stats:
+      - label: "Total anonymous bytes mapped"
+        aggregate: sum
+        field: len
+        filter_label: MMAP_ANON
+      - label: "Total bytes unmapped"
+        aggregate: sum
+        field: len
+        filter_label: MUNMAP
+      - label: "Page fault count"
+        aggregate: count
+        filter_label: PAGE_FAULT

@@ -1,0 +1,123 @@
+# examples/latency-analysis.yaml
+#
+# File I/O Latency Analysis Probe
+# --------------------------------
+# Measures per-syscall latency for read, write, open, and fsync operations.
+# Buckets latencies into a log2 histogram so you can see the distribution
+# (e.g., are reads bimodal — fast cache hits vs slow disk reads?).
+#
+# Use case: Diagnosing slow file I/O in a service without adding application
+# instrumentation. Useful for database engines, log writers, and web servers.
+#
+# Usage:
+#   tracery trace --config examples/latency-analysis.yaml --pid $(pgrep postgres)
+#   tracery trace --config examples/latency-analysis.yaml --pid 1234 --interval 5s
+#
+# Expected output: ASCII histogram per syscall, refreshed on each interval.
+# Example:
+#   read() latency (ns) — 128 samples
+#   [1µs,   2µs)  ████████████████████████ 48
+#   [2µs,   4µs)  ██████████ 20
+#   [4µs,   8µs)  █████ 10
+#   [128µs,256µs) ████████████████ 32  ← cache misses
+#   [1ms,   2ms)  ██████ 18             ← disk reads
+
+name: latency-analysis
+description: "File I/O latency histograms for read/write/open/fsync"
+version: "1"
+
+probes:
+  - name: read-latency
+    type: kprobe_pair          # entry + exit probe automatically attached
+    entry_event: sys_enter_read
+    exit_event: sys_exit_read
+    fields:
+      - name: fd
+        type: int
+        source: args.fd       # captured at entry
+      - name: count
+        type: size_t
+        source: args.count
+      - name: ret
+        type: int64
+        source: retval        # captured at exit
+    latency:
+      enabled: true
+      unit: ns
+      histogram:
+        type: log2
+        min_ns: 1000          # 1µs — ignore sub-microsecond noise
+        max_ns: 1000000000    # 1s — reads longer than this are anomalous
+        buckets: 20
+    filter:
+      expr: "ret >= 0"        # exclude failed reads
+
+  - name: write-latency
+    type: kprobe_pair
+    entry_event: sys_enter_write
+    exit_event: sys_exit_write
+    fields:
+      - name: fd
+        type: int
+        source: args.fd
+      - name: count
+        type: size_t
+        source: args.count
+      - name: ret
+        type: int64
+        source: retval
+    latency:
+      enabled: true
+      unit: ns
+      histogram:
+        type: log2
+        min_ns: 1000
+        max_ns: 1000000000
+        buckets: 20
+
+  - name: open-latency
+    type: kprobe_pair
+    entry_event: sys_enter_openat
+    exit_event: sys_exit_openat
+    fields:
+      - name: filename
+        type: string
+        source: args.filename
+      - name: ret
+        type: int
+        source: retval
+    latency:
+      enabled: true
+      unit: ns
+      histogram:
+        type: log2
+        min_ns: 1000
+        max_ns: 100000000     # 100ms — slow opens indicate lock contention
+        buckets: 16
+
+  - name: fsync-latency
+    type: kprobe_pair
+    entry_event: sys_enter_fsync
+    exit_event: sys_exit_fsync
+    fields:
+      - name: fd
+        type: int
+        source: args.fd
+      - name: ret
+        type: int
+        source: retval
+    latency:
+      enabled: true
+      unit: ns
+      histogram:
+        type: log2
+        min_ns: 100000        # 100µs — fsync is always slow; ignore sub-100µs
+        max_ns: 5000000000    # 5s
+        buckets: 16
+
+output:
+  format: histogram           # renders ASCII histogram per probe
+  interval: 2s                # refresh display every 2 seconds
+  clear_on_refresh: true
+  show_percentiles: [p50, p90, p99]
+  show_total_count: true

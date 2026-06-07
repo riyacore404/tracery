@@ -1,0 +1,138 @@
+# examples/custom-uprobe.yaml
+#
+# Custom Uprobe — User-Space Function Tracing
+# --------------------------------------------
+# Attaches probes to specific functions INSIDE a user-space binary by symbol name.
+# Unlike kprobes (which target kernel functions), uprobes target application code.
+#
+# Use case: Trace specific functions in a service without modifying it —
+# measure how long a database query function takes, catch error paths,
+# or audit calls to security-sensitive functions like crypto routines.
+#
+# Requirements:
+#   - Target binary must have symbols (not stripped): `nm ./myapp | grep funcname`
+#   - OR use DWARF debug info: `objdump -d ./myapp | grep funcname`
+#   - For Go binaries: symbols are present unless built with -ldflags="-s -w"
+#   - For stripped binaries: specify byte offset instead of symbol name
+#
+# Usage:
+#   tracery trace --config examples/custom-uprobe.yaml --pid $(pgrep myapp)
+#   tracery trace --config examples/custom-uprobe.yaml --pid 1234 --binary /usr/bin/myapp
+#
+# Note on frame pointers:
+#   Stack traces in uprobes require the target to be compiled with frame pointers:
+#     gcc -fno-omit-frame-pointer ...
+#     go build -gcflags="-l" ...   (disables inlining, makes stacks readable)
+#   Without frame pointers, stack traces will be truncated or absent.
+
+name: custom-uprobe
+description: "User-space function tracing via uprobes (requires symbol info)"
+version: "1"
+
+# Path to the target binary — can also be passed via --binary CLI flag
+# Use $BINARY as a placeholder; it will be resolved at attach time.
+binary: "$BINARY"
+
+probes:
+  - name: http-handler-latency
+    # Trace an HTTP request handler function by symbol name.
+    # Works for C/C++ and Go binaries that export symbols.
+    type: uprobe_pair
+    binary: "$BINARY"
+    symbol: "handle_request"      # function name in the binary
+    # For Go: "main.(*Server).handleRequest" or check with: nm ./binary | grep handle
+    fields:
+      - name: arg0
+        type: uint64
+        source: regs.rdi          # first argument (x86-64 calling convention)
+      - name: arg1
+        type: uint64
+        source: regs.rsi          # second argument
+    latency:
+      enabled: true
+      unit: ns
+      histogram:
+        type: log2
+        min_ns: 1000
+        max_ns: 10000000000       # 10s
+        buckets: 20
+    stack_trace:
+      enabled: true               # capture call stack on each invocation
+      depth: 16
+    output:
+      label: "HTTP_HANDLER"
+      format: "arg0={{.arg0}} arg1={{.arg1}}"
+
+  - name: db-query-latency
+    # Trace a database query function — measure actual query execution time.
+    type: uprobe_pair
+    binary: "$BINARY"
+    symbol: "db_execute_query"
+    latency:
+      enabled: true
+      unit: ns
+      histogram:
+        type: log2
+        min_ns: 10000             # 10µs — DB queries shorter than this are trivial
+        max_ns: 60000000000       # 60s
+        buckets: 20
+    output:
+      label: "DB_QUERY"
+
+  - name: error-path
+    # Fire only on error returns (return value < 0 or specific error codes).
+    # Useful for catching intermittent errors in production without logging.
+    type: uretprobe               # fires on function RETURN only
+    binary: "$BINARY"
+    symbol: "authenticate_user"
+    fields:
+      - name: retval
+        type: int64
+        source: regs.rax          # return value (x86-64)
+    filter:
+      expr: "retval != 0"         # only capture non-zero (error) returns
+    stack_trace:
+      enabled: true
+      depth: 32                   # deep stack on errors to understand call path
+    output:
+      label: "AUTH_ERROR"
+      format: "retval={{.retval}}"
+
+  - name: malloc-large
+    # Trace large heap allocations in the target binary's malloc.
+    # Useful for hunting memory bloat without Valgrind.
+    type: uprobe_pair
+    binary: "libc.so.6"           # attach to libc malloc, not the binary itself
+    symbol: "malloc"
+    fields:
+      - name: size
+        type: size_t
+        source: regs.rdi          # first argument = allocation size
+      - name: ret_addr
+        type: uint64
+        source: regs.rax          # return value = pointer (on exit)
+    filter:
+      expr: "size > 1048576"      # only allocations > 1MB
+    output:
+      label: "MALLOC_LARGE"
+      format: "size={{.size}} ptr=0x{{printf \"%x\" .ret_addr}}"
+
+output:
+  format: table
+  timestamp: true
+  # Flame graph output for stack traces captured above
+  flamegraph:
+    enabled: false                # set true to also write flamegraph.json
+    path: "uprobe-flamegraph.json"
+  summary:
+    enabled: true
+    stats:
+      - label: "HTTP handler p99 latency"
+        aggregate: p99
+        filter_label: HTTP_HANDLER
+      - label: "DB query p99 latency"
+        aggregate: p99
+        filter_label: DB_QUERY
+      - label: "Auth errors"
+        aggregate: count
+        filter_label: AUTH_ERROR

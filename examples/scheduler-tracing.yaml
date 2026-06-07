@@ -1,0 +1,145 @@
+# examples/scheduler-tracing.yaml
+#
+# Scheduler Tracing Probe
+# -----------------------
+# Traces CPU scheduler events for a target process: context switches (voluntary
+# and involuntary), wakeups, CPU migrations, and run queue latency.
+#
+# Use case: Diagnosing latency spikes caused by CPU starvation, priority
+# inversion, or excessive context switching — without a profiler attached.
+#
+# Usage:
+#   tracery trace --config examples/scheduler-tracing.yaml --pid $(pgrep myserver)
+#   tracery trace --config examples/scheduler-tracing.yaml --pid 1234 --duration 30s
+#
+# Key metrics to watch:
+#   - INVOLUNTARY_SWITCH high count → process being preempted (CPU contention)
+#   - RUN_QUEUE_LATENCY p99 > 1ms → scheduler not giving process CPU fast enough
+#   - CPU_MIGRATION events → process bouncing between cores (cache cold)
+#   - WAKEUP_LATENCY high → event-driven workload waiting too long for signals
+#
+# Understanding the output:
+#   prev_state values (from sched_switch tracepoint):
+#     R = running/runnable, S = sleeping, D = uninterruptible sleep,
+#     Z = zombie, I = idle
+
+name: scheduler-tracing
+description: "CPU scheduler event tracing: context switches, wakeups, migrations"
+version: "1"
+
+probes:
+  - name: context-switch
+    type: tracepoint
+    event: sched:sched_switch
+    fields:
+      - name: prev_comm
+        type: string
+        source: args.prev_comm
+      - name: prev_pid
+        type: int32
+        source: args.prev_pid
+      - name: prev_prio
+        type: int32
+        source: args.prev_prio
+      - name: prev_state
+        type: int64
+        source: args.prev_state
+      - name: next_comm
+        type: string
+        source: args.next_comm
+      - name: next_pid
+        type: int32
+        source: args.next_pid
+    filter:
+      # Only events where target PID is switching away or being switched to
+      expr: "prev_pid == $TARGET_PID || next_pid == $TARGET_PID"
+    classify:
+      # Distinguish voluntary (prev_state != R) vs involuntary (prev_state == R)
+      field: prev_state
+      cases:
+        - value: 0     # TASK_RUNNING
+          label: "INVOLUNTARY_SWITCH"
+        - default: true
+          label: "VOLUNTARY_SWITCH"
+    output:
+      format: "{{.prev_comm}}({{.prev_pid}}) → {{.next_comm}}({{.next_pid}}) state={{.prev_state}}"
+
+  - name: wakeup
+    type: tracepoint
+    event: sched:sched_wakeup
+    fields:
+      - name: comm
+        type: string
+        source: args.comm
+      - name: pid
+        type: int32
+        source: args.pid
+      - name: prio
+        type: int32
+        source: args.prio
+      - name: target_cpu
+        type: int32
+        source: args.target_cpu
+    filter:
+      expr: "pid == $TARGET_PID"
+    output:
+      label: "WAKEUP"
+      format: "{{.comm}}({{.pid}}) cpu={{.target_cpu}} prio={{.prio}}"
+
+  - name: cpu-migration
+    type: tracepoint
+    event: sched:sched_migrate_task
+    fields:
+      - name: comm
+        type: string
+        source: args.comm
+      - name: pid
+        type: int32
+        source: args.pid
+      - name: orig_cpu
+        type: int32
+        source: args.orig_cpu
+      - name: dest_cpu
+        type: int32
+        source: args.dest_cpu
+    filter:
+      expr: "pid == $TARGET_PID"
+    output:
+      label: "CPU_MIGRATION"
+      format: "{{.comm}}({{.pid}}) cpu {{.orig_cpu}} → {{.dest_cpu}}"
+
+  - name: run-queue-latency
+    # Measures time from wakeup to actually running on CPU (scheduler latency)
+    type: tracepoint_pair
+    entry_event: sched:sched_wakeup       # process becomes runnable
+    exit_event: sched:sched_switch        # process is switched IN (next_pid == target)
+    match_field: pid                       # correlate wakeup pid to next_pid
+    filter:
+      expr: "pid == $TARGET_PID"
+    latency:
+      enabled: true
+      unit: ns
+      histogram:
+        type: log2
+        min_ns: 1000          # 1µs
+        max_ns: 100000000     # 100ms — scheduler latency above this is alarming
+        buckets: 16
+    output:
+      label: "RUN_QUEUE_LATENCY"
+
+output:
+  format: table
+  timestamp: true
+  interval: 1s
+  summary:
+    enabled: true
+    stats:
+      - label: "Voluntary context switches"
+        aggregate: count
+        filter_label: VOLUNTARY_SWITCH
+      - label: "Involuntary context switches"
+        aggregate: count
+        filter_label: INVOLUNTARY_SWITCH
+      - label: "CPU migrations"
+        aggregate: count
+        filter_label: CPU_MIGRATION
