@@ -207,7 +207,9 @@ Examples:
 		}
 		defer func() {
 			for _, l := range links {
-				l.Close()
+				if err := l.Close(); err != nil {
+					log.Warn().Err(err).Msg("error closing link")
+				}
 			}
 		}()
 
@@ -215,14 +217,20 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("opening ring buffer: %w", err)
 		}
-		defer rd.Close()
+		defer func() {
+			if err := rd.Close(); err != nil {
+				log.Warn().Err(err).Msg("error closing ring buffer reader")
+			}
+		}()
 
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		go func() {
 			<-sig
 			log.Info().Msg("shutting down event stream")
-			rd.Close()
+			if err := rd.Close(); err != nil {
+				log.Warn().Err(err).Msg("error closing ring buffer on signal")
+			}
 		}()
 
 		fmt.Printf("Streaming %s events for PID %d — Ctrl+C to stop\n", typeFilter, pid)

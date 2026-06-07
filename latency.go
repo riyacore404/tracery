@@ -207,14 +207,22 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("attaching sys_enter: %w", err)
 		}
-		defer enterTP.Close()
+		defer func() {
+			if err := enterTP.Close(); err != nil {
+				log.Warn().Err(err).Msg("error closing enterTP")
+			}
+		}()
 
 		exitTP, err := link.Tracepoint("raw_syscalls", "sys_exit",
 			coll.Programs["handle_exit"], nil)
 		if err != nil {
 			return fmt.Errorf("attaching sys_exit: %w", err)
 		}
-		defer exitTP.Close()
+		defer func() {
+			if err := exitTP.Close(); err != nil {
+				log.Warn().Err(err).Msg("error closing exitTP")
+			}
+		}()
 
 		log.Info().Msg("latency tracer attached — collecting data")
 
