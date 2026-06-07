@@ -13,6 +13,7 @@
 [![Go Version](https://img.shields.io/badge/go-1.22+-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/license-GPL--2.0-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%205.8%2B-lightgrey.svg)](https://kernel.org)
+[![CI](https://github.com/riyacore404/tracery/actions/workflows/ci.yaml/badge.svg)](https://github.com/riyacore404/tracery/actions/workflows/ci.yaml)
 
 Tracery attaches eBPF probes to running Linux processes and streams syscall
 activity, latency measurements, memory events, and scheduler activity in
