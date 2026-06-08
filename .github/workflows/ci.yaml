@@ -25,7 +25,7 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           args: --no-config --enable=errcheck,govet,staticcheck
-          
+
   bpf-build:
     name: BPF compile
     runs-on: ubuntu-22.04
