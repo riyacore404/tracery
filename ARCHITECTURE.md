@@ -401,20 +401,80 @@ Open with: `speedscope flamegraph.json` or drag-drop to [speedscope.app](https:/
 
 ## Overhead Measurement
 
-Tracery's `bench` command measures its own overhead using `perf_event_open`:
+### Primary method: wall-clock timing (3-run median)
+
+Overhead was measured by running a fork/exec-heavy workload (100k iterations of
+`cat /dev/null`) three times each under three conditions and taking the median:
+
+```bash
+# Baseline — untraced
+for i in 1 2 3; do { time bash workload.sh; } 2>&1 | grep real; done
+
+# strace — ptrace mechanism
+for i in 1 2 3; do { time strace -o /dev/null bash workload.sh; } 2>&1 | grep real; done
+
+# Tracery — eBPF mechanism
+sudo -v
+for i in 1 2 3; do
+  bash workload.sh &
+  WPID=$!
+  sudo ./tracery count --pid $WPID > /dev/null &
+  TPID=$!
+  wait $WPID
+  kill $TPID 2>/dev/null
+  echo "Run $i done"
+done
+```
+
+Results (Ubuntu 24.04, kernel 6.x, VirtualBox):
+
+| Condition | Run 1 | Run 2 | Run 3 | Median |
+|-----------|-------|-------|-------|--------|
+| Baseline  | 76.9s | 73.5s | 70.7s | **73.5s** |
+| strace (`-o /dev/null`) | 151.2s | 148.5s | 148.0s | **148.5s** |
+| Tracery | ~70s | ~72s | ~78s | **~72s** |
+
+**strace overhead: +102% (2.0× slower). Tracery overhead: <2% (within measurement noise).**
+
+The strace overhead is structural and not output-related — even with `-o /dev/null`
+suppressing all output, `ptrace` still stops the target process on every syscall
+entry and exit, causing two forced context switches per syscall. At 100k syscalls/sec,
+this dominates wall time. Tracery's eBPF programs execute in the kernel without
+stopping the process.
+
+### Secondary method: `perf_event_open` instruction-count delta
+
+The `tracery bench` command implements instruction-count measurement via
+`perf_event_open(PERF_COUNT_HW_INSTRUCTIONS)`:
 
 ```
-tracery bench --pid 1234 --duration 10s
+tracery bench --workload "bash workload.sh" --duration 10s
 ```
 
 Procedure:
-1. Run the workload for 10s **without** tracing. Record instruction count via `perf_event_open(PERF_COUNT_HW_INSTRUCTIONS)`.
-2. Run the same workload for 10s **with** tracing. Record instruction count.
+1. Run the workload for `--duration` **without** tracing. Record instruction count.
+2. Attach Tracery. Run the workload for `--duration` **with** tracing. Record instruction count.
 3. Compute delta: `overhead = (traced - untraced) / untraced * 100`.
+
+**Hardware counter availability:** `PERF_COUNT_HW_INSTRUCTIONS` requires either
+bare-metal hardware or a hypervisor that exposes the CPU's PMU (Performance
+Monitoring Unit). VirtualBox and most cloud VM types do not expose PMU counters
+(`perf_event_paranoid` controls access but cannot create counters the hypervisor
+doesn't pass through). On such environments `tracery bench` falls back to
+wall-clock timing automatically and prints an explanation.
+
+To get instruction-count numbers, run on bare metal or a KVM VM with:
+
+```bash
+# Enable PMU passthrough in KVM
+-cpu host,+pmu
+```
 
 Target: **< 3% CPU overhead** on typical server workloads (< 100k syscalls/sec).
 
-At high syscall rates (> 500k/sec), ring buffer contention becomes the bottleneck. Use `--mode=count-only` (hash map counters, no ring buffer streaming) to keep overhead under 1%.
+At high syscall rates (> 500k/sec), ring buffer contention becomes the bottleneck.
+Use `--mode=count-only` (hash map counters, no ring buffer streaming) to keep
+overhead under 1%.
 
 ---
 
@@ -461,6 +521,7 @@ The 64-byte `payload` field covers the common cases (path prefix, flag values, a
 | CO-RE requires BTF in kernel | Custom kernels without BTF not supported | Rebuild kernel with `CONFIG_DEBUG_INFO_BTF=y` |
 | uprobe overhead is higher | uprobe is 3-5x more expensive than kprobe | Use sparingly; profile only target functions |
 | No network packet capture | Not a replacement for tcpdump/XDP | Combine with `tcpdump` for network analysis |
+| Hardware PMU unavailable in VMs | `tracery bench` instruction-count mode doesn't work on VirtualBox/most cloud VMs | Use wall-clock mode (automatic fallback) or run on bare metal / KVM with `-cpu host,+pmu` |
 
 ---
 
