@@ -1,55 +1,75 @@
-CLANG      := clang-16
-BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_arm64
+# Tracery Makefile
+# Supports: Ubuntu 22.04/24.04, ARM64 (aarch64) and x86_64
 
-.PHONY: all build clean bpf
+# ── Architecture detection ────────────────────────────────────────────────────
+ARCH := $(shell uname -m)
+ifeq ($(ARCH),aarch64)
+    BPF_ARCH := arm64
+else ifeq ($(ARCH),x86_64)
+    BPF_ARCH := x86
+else
+    BPF_ARCH := $(ARCH)
+endif
 
-.PHONY: setup
-setup:
-	sudo bash setup.sh
+# ── Clang detection ───────────────────────────────────────────────────────────
+# Try clang in order: clang-16, clang-14, clang (system default)
+ifneq ($(shell which clang-16 2>/dev/null),)
+    CLANG := clang-16
+else ifneq ($(shell which clang-14 2>/dev/null),)
+    CLANG := clang-14
+else
+    CLANG := clang
+endif
 
-.PHONY: test lint
+BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_$(BPF_ARCH) \
+              -I./bpf \
+              -I/usr/include/bpf
 
-test:
-	go test ./...
+BPF_SRCS := $(wildcard bpf/*.bpf.c)
+BPF_OBJS := $(BPF_SRCS:.bpf.c=.bpf.o)
 
-lint:
-	go test ./...
-	golangci-lint run --no-config --enable=errcheck,govet,staticcheck ./...
-	
+GO      := go
+BINARY  := tracery
+
+.PHONY: all bpf build test lint clean fmt
+
 all: bpf build
 
-bpf: bpf/syscall_counter.bpf.o bpf/latency.bpf.o bpf/events.bpf.o bpf/stack.bpf.o
+# ── BPF compilation ───────────────────────────────────────────────────────────
+bpf: $(BPF_OBJS)
 
-bpf/stack.bpf.o: bpf/stack.bpf.c bpf/vmlinux.h
-	$(CLANG) $(BPF_CFLAGS) \
-		-I./bpf \
-		-I/usr/include/bpf \
-		-c bpf/stack.bpf.c \
-		-o bpf/stack.bpf.o
+bpf/%.bpf.o: bpf/%.bpf.c bpf/vmlinux.h
+	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
-bpf/syscall_counter.bpf.o: bpf/syscall_counter.bpf.c bpf/vmlinux.h
-	$(CLANG) $(BPF_CFLAGS) \
-		-I./bpf \
-		-I/usr/include/bpf \
-		-c bpf/syscall_counter.bpf.c \
-		-o bpf/syscall_counter.bpf.o
-
-bpf/latency.bpf.o: bpf/latency.bpf.c bpf/vmlinux.h
-	$(CLANG) $(BPF_CFLAGS) \
-		-I./bpf \
-		-I/usr/include/bpf \
-		-c bpf/latency.bpf.c \
-		-o bpf/latency.bpf.o
-
-bpf/events.bpf.o: bpf/events.bpf.c bpf/vmlinux.h
-	$(CLANG) $(BPF_CFLAGS) \
-		-I./bpf \
-		-I/usr/include/bpf \
-		-c bpf/events.bpf.c \
-		-o bpf/events.bpf.o
-
+# ── Go binary ─────────────────────────────────────────────────────────────────
 build:
-	go build -o tracery .
+	$(GO) build -o $(BINARY) .
 
+# ── Tests ─────────────────────────────────────────────────────────────────────
+test:
+	$(GO) test ./...
+
+test-verbose:
+	$(GO) test -v ./...
+
+# ── Lint ──────────────────────────────────────────────────────────────────────
+lint: test
+	golangci-lint run --no-config --enable=errcheck,govet,staticcheck ./...
+
+# ── Format ───────────────────────────────────────────────────────────────────
+fmt:
+	$(GO) fmt ./...
+
+# ── Clean ─────────────────────────────────────────────────────────────────────
 clean:
-	rm -f bpf/*.o tracery
+	rm -f bpf/*.o $(BINARY)
+
+# ── vmlinux.h generation ──────────────────────────────────────────────────────
+vmlinux:
+	bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+
+# ── Info ──────────────────────────────────────────────────────────────────────
+info:
+	@echo "Arch:   $(ARCH) → BPF_ARCH=$(BPF_ARCH)"
+	@echo "Clang:  $(CLANG)"
+	@echo "BPF sources: $(BPF_SRCS)"

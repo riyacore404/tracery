@@ -15,27 +15,37 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
-
-	"github.com/riyacore/tracery/internal/logger"
 )
 
-// Event type constants — must match events.bpf.c exactly
 const (
-	eventMemMmap    = 1
-	eventMemMunmap  = 2
-	eventMemBrk     = 3
+	eventMemMmap     = 1
+	eventMemMunmap   = 2
+	eventMemBrk      = 3
 	eventSchedSwitch = 4
 )
 
-// Event struct — must match struct event in events.bpf.c exactly.
-// Field order, sizes, and padding must be identical.
+// kernelEvent must match struct event in events.bpf.c exactly.
+//
+// ARM64 layout (verified against C struct with explicit _pad[7]):
+//   timestamp  u64    offset 0   size 8
+//   pid        u32    offset 8   size 4
+//   tid        u32    offset 12  size 4
+//   type       u8     offset 16  size 1
+//   comm[16]   char   offset 17  size 16
+//   _pad[7]    u8     offset 33  size 7   ← aligns addr to offset 40
+//   addr       u64    offset 40  size 8
+//   size       u64    offset 48  size 8
+//   prev_pid   u32    offset 56  size 4
+//   next_pid   u32    offset 60  size 4
+//   next_comm  char   offset 64  size 16
+//   total: 80 bytes
 type kernelEvent struct {
 	Timestamp uint64
 	PID       uint32
 	TID       uint32
 	Type      uint8
-	_         [7]uint8  // padding to align Comm to 8-byte boundary
 	Comm      [16]byte
+	Pad       [7]uint8 // explicit padding — must match C struct _pad[7]
 	Addr      uint64
 	Size      uint64
 	PrevPID   uint32
@@ -43,7 +53,7 @@ type kernelEvent struct {
 	NextComm  [16]byte
 }
 
-// parseComm converts a null-terminated [16]byte to a Go string
+// parseComm converts a null-terminated [16]byte comm field to a Go string.
 func parseComm(b [16]byte) string {
 	s := b[:]
 	if idx := bytes.IndexByte(s, 0); idx != -1 {
@@ -52,7 +62,7 @@ func parseComm(b [16]byte) string {
 	return string(s)
 }
 
-// formatBytes makes byte sizes human-readable
+// formatBytes makes byte sizes human-readable.
 func formatBytes(b uint64) string {
 	switch {
 	case b == 0:
@@ -66,7 +76,8 @@ func formatBytes(b uint64) string {
 	}
 }
 
-// printEvent formats and prints a single event to stdout
+// printEvent formats and prints a single event.
+// typeFilter: "mem", "sched", or "all"
 func printEvent(e *kernelEvent, typeFilter string) {
 	comm := parseComm(e.Comm)
 	tsMs := float64(e.Timestamp) / 1_000_000
@@ -98,7 +109,7 @@ func printEvent(e *kernelEvent, typeFilter string) {
 			return
 		}
 		nextComm := parseComm(e.NextComm)
-		fmt.Printf("[%12.3fms] SWITCH  %-16s(%-6d) → %-16s(%-6d)\n",
+		fmt.Printf("[%12.3fms] SWITCH  %-16s(%d) → %-16s(%d)\n",
 			tsMs, comm, e.PrevPID, nextComm, e.NextPID)
 	}
 }
@@ -114,9 +125,9 @@ Event types:
   all   — both mem and sched events
 
 Examples:
-  tracery events --pid 1234 --type mem
-  tracery events --pid 1234 --type sched
-  tracery events --pid 1234 --type all`,
+  sudo tracery events --pid 1234 --type mem
+  sudo tracery events --pid 1234 --type sched
+  sudo tracery events --pid 1234 --type all`,
 
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pid, _ := cmd.Flags().GetUint32("pid")
@@ -126,12 +137,8 @@ Examples:
 			return fmt.Errorf("--pid is required")
 		}
 		if typeFilter != "mem" && typeFilter != "sched" && typeFilter != "all" {
-			return fmt.Errorf("--type must be mem, sched, or all")
+			return fmt.Errorf("--type must be mem, sched, or all — got %q", typeFilter)
 		}
-
-		verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
-		pretty, _ := cmd.Root().PersistentFlags().GetBool("pretty")
-		logger.Init(pretty, verbose)
 
 		log.Info().
 			Uint32("pid", pid).
@@ -147,7 +154,6 @@ Examples:
 			return fmt.Errorf("loading BPF spec: %w", err)
 		}
 
-		// Set which event types to capture
 		captureMem := uint8(0)
 		captureSched := uint8(0)
 		if typeFilter == "mem" || typeFilter == "all" {
@@ -171,47 +177,37 @@ Examples:
 		}
 		defer coll.Close()
 
-		// Attach all probes — unused ones are disabled via constants
-		type tpAttach struct {
-			category string
-			name     string
-			prog     string
-		}
-
-		attachPoints := []tpAttach{
-			{"syscalls", "sys_enter_mmap", "trace_mmap"},
-			{"syscalls", "sys_enter_munmap", "trace_munmap"},
-			{"syscalls", "sys_enter_brk", "trace_brk"},
-			{"sched", "sched_switch", "trace_sched_switch"},
-		}
-
-		var links []link.Link
-		for _, ap := range attachPoints {
-			prog, ok := coll.Programs[ap.prog]
-			if !ok {
-				log.Warn().Str("prog", ap.prog).Msg("program not found in collection")
-				continue
-			}
-			l, err := link.Tracepoint(ap.category, ap.name, prog, nil)
+		// Attach the raw_syscalls probe for mem events
+		var memLink link.Link
+		if captureMem == 1 {
+			memLink, err = link.Tracepoint("raw_syscalls", "sys_enter",
+				coll.Programs["trace_mem_syscalls"], nil)
 			if err != nil {
-				log.Warn().
-					Str("tracepoint", ap.category+"/"+ap.name).
-					Err(err).
-					Msg("failed to attach tracepoint — skipping")
-				continue
+				return fmt.Errorf("attaching raw_syscalls/sys_enter: %w", err)
 			}
-			links = append(links, l)
-			log.Debug().
-				Str("tracepoint", ap.category+"/"+ap.name).
-				Msg("attached")
-		}
-		defer func() {
-			for _, l := range links {
-				if err := l.Close(); err != nil {
-					log.Warn().Err(err).Msg("error closing link")
+			defer func() {
+				if err := memLink.Close(); err != nil {
+					log.Warn().Err(err).Msg("error closing mem link")
 				}
+			}()
+			log.Debug().Msg("attached raw_syscalls/sys_enter for mem events")
+		}
+
+		// Attach the sched_switch probe
+		var schedLink link.Link
+		if captureSched == 1 {
+			schedLink, err = link.Tracepoint("sched", "sched_switch",
+				coll.Programs["trace_sched_switch"], nil)
+			if err != nil {
+				return fmt.Errorf("attaching sched/sched_switch: %w", err)
 			}
-		}()
+			defer func() {
+				if err := schedLink.Close(); err != nil {
+					log.Warn().Err(err).Msg("error closing sched link")
+				}
+			}()
+			log.Debug().Msg("attached sched/sched_switch")
+		}
 
 		rd, err := ringbuf.NewReader(coll.Maps["events"])
 		if err != nil {
@@ -236,7 +232,6 @@ Examples:
 		fmt.Printf("Streaming %s events for PID %d — Ctrl+C to stop\n", typeFilter, pid)
 		fmt.Println("─────────────────────────────────────────────────────────────────")
 
-		// Event loop — same pattern as mini 3
 		for {
 			record, err := rd.Read()
 			if err != nil {
@@ -253,7 +248,11 @@ Examples:
 				binary.NativeEndian,
 				&e,
 			); err != nil {
-				log.Debug().Err(err).Msg("failed to parse event")
+				log.Debug().
+					Int("raw_len", len(record.RawSample)).
+					Int("struct_size", binary.Size(kernelEvent{})).
+					Err(err).
+					Msg("failed to parse event — struct size mismatch?")
 				continue
 			}
 
