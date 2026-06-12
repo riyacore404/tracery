@@ -22,7 +22,7 @@ Unlike `strace`, Tracery does not stop the target process on every syscall.
 Instrumentation runs inside the kernel through eBPF, enabling low-overhead
 observability without code changes or restarts.
 
-[![Demo]( https://asciinema.org/a/88dwSxe1okYYG4Ri.svg)]( https://asciinema.org/a/88dwSxe1okYYG4Ri)
+[![Demo]( https://asciinema.org/a/tqB3ZvBfI5Nd7GiM.svg)]( https://asciinema.org/a/tqB3ZvBfI5Nd7GiM)
 
 ---
 
