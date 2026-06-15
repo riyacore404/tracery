@@ -28,8 +28,18 @@ observability without code changes or restarts.
 
 ## Quick Start
 
-```bash
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/riyacore404/tracery/main/setup.sh)
+````bash
+# 1. Install build dependencies (clang, Go, libbpf, bpftool)
+curl -fsSL https://raw.githubusercontent.com/riyacore404/tracery/main/setup.sh | sudo bash
+
+# 2. Clone and build
+git clone https://github.com/riyacore404/tracery.git
+cd tracery
+make build
+
+# 3. Run
+bash workload.sh &
+sudo ./tracery count --pid $!
 ```
 
 ---

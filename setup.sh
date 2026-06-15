@@ -234,7 +234,7 @@ printf "  %-20s %s\n" "bpftool:"    "$(bpftool version 2>/dev/null | head -1 || 
 printf "  %-20s %s\n" "libbpf-dev:" "$(dpkg -s libbpf-dev 2>/dev/null | grep Version | awk '{print $2}' || echo 'not found')"
 printf "  %-20s %s\n" "BTF:"        "$(test -f /sys/kernel/btf/vmlinux && echo 'available' || echo 'MISSING')"
 echo ""
-ok "Setup complete. You are ready to build Tracery."
+ok "Setup complete. Build environment is ready."
 echo ""
 echo -e "  ${BOLD}Next steps:${RESET}"
 echo "  1. cd ~/tracery"
