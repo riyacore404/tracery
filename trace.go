@@ -18,110 +18,13 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/riyacore/tracery/internal/output"
+	"github.com/riyacore/tracery/internal/probe"
 )
-
-// ── YAML schema structs ───────────────────────────────────────────────────────
-
-type ProbeConfig struct {
-	Name        string        `yaml:"name"`
-	Description string        `yaml:"description"`
-	Version     string        `yaml:"version"`
-	Binary      string        `yaml:"binary,omitempty"`
-	Probes      []ProbeEntry  `yaml:"probes"`
-	Output      OutputConfig  `yaml:"output"`
-}
-
-type ProbeEntry struct {
-	Name       string       `yaml:"name"`
-	Type       string       `yaml:"type"`
-	Event      string       `yaml:"event,omitempty"`
-	EntryEvent string       `yaml:"entry_event,omitempty"`
-	ExitEvent  string       `yaml:"exit_event,omitempty"`
-	Binary     string       `yaml:"binary,omitempty"`
-	Symbol     string       `yaml:"symbol,omitempty"`
-	Fields     []FieldDef   `yaml:"fields,omitempty"`
-	Filter     *FilterDef   `yaml:"filter,omitempty"`
-	Latency    *LatencyDef  `yaml:"latency,omitempty"`
-	Output     *ProbeOutput `yaml:"output,omitempty"`
-}
-
-type FieldDef struct {
-	Name   string `yaml:"name"`
-	Type   string `yaml:"type"`
-	Source string `yaml:"source"`
-}
-
-type FilterDef struct {
-	Expr string `yaml:"expr"`
-}
-
-type LatencyDef struct {
-	Enabled   bool          `yaml:"enabled"`
-	Unit      string        `yaml:"unit"`
-	Histogram *HistogramDef `yaml:"histogram,omitempty"`
-}
-
-type HistogramDef struct {
-	Type    string `yaml:"type"`
-	MinNs   int64  `yaml:"min_ns"`
-	MaxNs   int64  `yaml:"max_ns"`
-	Buckets int    `yaml:"buckets"`
-}
-
-type ProbeOutput struct {
-	Label  string `yaml:"label,omitempty"`
-	Format string `yaml:"format,omitempty"`
-}
-
-type OutputConfig struct {
-	Format    string `yaml:"format"`
-	Timestamp bool   `yaml:"timestamp"`
-	Interval  string `yaml:"interval,omitempty"`
-}
-
-var validProbeTypes = map[string]bool{
-	"tracepoint":      true,
-	"kprobe":          true,
-	"kprobe_pair":     true,
-	"uprobe":          true,
-	"uprobe_pair":     true,
-	"uretprobe":       true,
-	"tracepoint_pair": true,
-}
-
-func (c *ProbeConfig) Validate() error {
-	if c.Name == "" {
-		return fmt.Errorf("config missing required field: name")
-	}
-	if len(c.Probes) == 0 {
-		return fmt.Errorf("config %q defines no probes", c.Name)
-	}
-	for i, p := range c.Probes {
-		if p.Name == "" {
-			return fmt.Errorf("probe[%d] missing required field: name", i)
-		}
-		if !validProbeTypes[p.Type] {
-			return fmt.Errorf("probe %q has unknown type %q", p.Name, p.Type)
-		}
-		if (p.Type == "tracepoint" || p.Type == "kprobe") && p.Event == "" {
-			return fmt.Errorf("probe %q (type=%s) requires field: event", p.Name, p.Type)
-		}
-		if (p.Type == "kprobe_pair" || p.Type == "tracepoint_pair") && (p.EntryEvent == "" || p.ExitEvent == "") {
-			return fmt.Errorf("probe %q (type=%s) requires entry_event and exit_event", p.Name, p.Type)
-		}
-		if (p.Type == "uprobe" || p.Type == "uprobe_pair" || p.Type == "uretprobe") && p.Symbol == "" {
-			return fmt.Errorf("probe %q (type=%s) requires field: symbol", p.Name, p.Type)
-		}
-	}
-	return nil
-}
-
-// ── Command ───────────────────────────────────────────────────────────────────
 
 var (
 	traceConfigPath string
 	traceDryRun     bool
-	traceOutputFmt  string
+	traceOutputPath string
 	tracePIDFlag    int
 )
 
@@ -129,8 +32,9 @@ var traceCmd = &cobra.Command{
 	Use:   "trace",
 	Short: "Run probes defined in a YAML config file",
 	Example: `  sudo tracery trace --config examples/latency-analysis.yaml --pid 1234
-  sudo tracery trace --config examples/syscall-audit.yaml --pid 1234 --output json
-  sudo tracery trace --config examples/latency-analysis.yaml --pid 1234 --dry-run`,
+  sudo tracery trace --config examples/syscall-audit.yaml --pid 1234
+  sudo tracery trace --config examples/latency-analysis.yaml --pid 1234 --dry-run
+  sudo tracery trace --config examples/latency-analysis.yaml --pid 1234 --output flamegraph.json`,
 	RunE: runTrace,
 }
 
@@ -138,8 +42,8 @@ func init() {
 	traceCmd.Flags().StringVar(&traceConfigPath, "config", "", "Path to YAML probe config file (required)")
 	traceCmd.Flags().IntVar(&tracePIDFlag, "pid", 0, "Target process PID (required)")
 	traceCmd.Flags().BoolVar(&traceDryRun, "dry-run", false, "Parse and validate config without attaching probes")
-	traceCmd.Flags().StringVar(&traceOutputFmt, "output", "table", "Output format: table, json")
-	
+	traceCmd.Flags().StringVar(&traceOutputPath, "output", "flamegraph.json", "Output path for flame graph JSON")
+
 	if err := traceCmd.MarkFlagRequired("config"); err != nil {
 		panic(err)
 	}
@@ -156,7 +60,8 @@ func runTrace(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("reading config %s: %w", traceConfigPath, err)
 	}
 
-	var cfg ProbeConfig
+	// Use the canonical ProbeConfig from internal/probe — single source of truth
+	var cfg probe.ProbeConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
@@ -181,13 +86,10 @@ func runTrace(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// ── Live trace ────────────────────────────────────────────────────────────
-
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return fmt.Errorf("removing memlock: %w", err)
 	}
 
-	// Load the stack BPF object
 	spec, err := ebpf.LoadCollectionSpec("bpf/stack.bpf.o")
 	if err != nil {
 		return fmt.Errorf("loading stack BPF object: %w", err)
@@ -219,15 +121,14 @@ func runTrace(cmd *cobra.Command, args []string) error {
 	log.Info().
 		Int("pid", tracePIDFlag).
 		Str("config", traceConfigPath).
+		Str("output", traceOutputPath).
 		Msg("stack tracer attached")
 
-	// Read /proc/PID/maps for symbol resolution
 	regions, err := output.ReadMaps(uint32(tracePIDFlag))
 	if err != nil {
 		log.Warn().Err(err).Msg("could not read process maps — addresses will show as hex")
 	}
 
-	// Open ring buffer
 	rd, err := ringbuf.NewReader(coll.Maps["events"])
 	if err != nil {
 		return fmt.Errorf("opening ring buffer: %w", err)
@@ -238,7 +139,6 @@ func runTrace(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// Collect samples for flame graph
 	var samples []output.StackSample
 	stackMap := coll.Maps["stack_traces"]
 
@@ -253,9 +153,9 @@ func runTrace(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	fmt.Printf("Tracing PID %d — Ctrl+C to stop and write flame graph\n", tracePIDFlag)
+	fmt.Printf("Tracing PID %d using config %q — Ctrl+C to stop and write flame graph\n",
+		tracePIDFlag, cfg.Name)
 
-	// ── Stack event struct — must match stack.bpf.c exactly ──────────────────
 	type stackEvent struct {
 		TimestampNs uint64
 		PID         uint32
@@ -285,10 +185,9 @@ func runTrace(cmd *cobra.Command, args []string) error {
 		}
 
 		if e.StackID < 0 {
-			continue // bpf_get_stackid failed — skip
+			continue
 		}
 
-		// Look up the stack trace addresses from the stack map
 		var addrs [127]uint64
 		if err := stackMap.Lookup(uint32(e.StackID), &addrs); err != nil {
 			continue
@@ -301,14 +200,8 @@ func runTrace(cmd *cobra.Command, args []string) error {
 
 		samples = append(samples, output.StackSample{
 			Frames: frames,
-			Weight: 1, // each syscall counts as weight 1
+			Weight: 1,
 		})
-	}
-
-	// Write flame graph output
-	outPath := "flamegraph.json"
-	if traceOutputFmt == "json" {
-		outPath = "flamegraph.json"
 	}
 
 	if len(samples) == 0 {
@@ -316,11 +209,11 @@ func runTrace(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if err := output.WriteFlamegraph(outPath, cfg.Name, samples); err != nil {
+	if err := output.WriteFlamegraph(traceOutputPath, cfg.Name, samples); err != nil {
 		return fmt.Errorf("writing flame graph: %w", err)
 	}
 
-	fmt.Printf("✓ Flame graph written to %s — open at speedscope.app\n", outPath)
+	fmt.Printf("✓ Flame graph written to %s — open at speedscope.app\n", traceOutputPath)
 	fmt.Printf("  %d stack samples collected\n", len(samples))
 	return nil
 }
