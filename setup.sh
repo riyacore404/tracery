@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # setup.sh — Tracery development environment bootstrap
 # Supports Ubuntu 22.04, Ubuntu 24.04, and Debian 12
+# Detects architecture (x86_64 and aarch64/ARM64 both supported)
 # Run as root or with sudo privileges.
 #
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/riyacore404/tracery/main/setup.sh | bash
-#   OR: bash setup.sh
+# Usage (three equivalent forms):
+#   curl -fsSL https://raw.githubusercontent.com/riyacore404/tracery/main/setup.sh | sudo bash
+#   sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/riyacore404/tracery/main/setup.sh)"
+#   OR locally: sudo bash setup.sh
 
 set -euo pipefail
 
@@ -39,6 +41,30 @@ if [[ "$ID" != "ubuntu" && "$ID" != "debian" ]]; then
 fi
 ok "OS: $PRETTY_NAME"
 
+# ─── Architecture detection ──────────────────────────────────────────────────
+section "Checking Architecture"
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64)
+    GO_ARCH="amd64"
+    GORELEASER_ARCH="x86_64"
+    BPF_TARGET="x86"
+    ok "Architecture: x86_64 (amd64)"
+    ;;
+  aarch64|arm64)
+    GO_ARCH="arm64"
+    GORELEASER_ARCH="arm64"
+    BPF_TARGET="arm64"
+    ok "Architecture: ARM64 (aarch64)"
+    ;;
+  *)
+    warn "Unknown architecture: $ARCH — proceeding but things may not work"
+    GO_ARCH="amd64"
+    GORELEASER_ARCH="x86_64"
+    BPF_TARGET="x86"
+    ;;
+esac
+
 # ─── Kernel version check ────────────────────────────────────────────────────
 section "Checking Kernel"
 KERNEL=$(uname -r)
@@ -62,14 +88,24 @@ fi
 section "Installing system dependencies"
 apt-get update -qq
 
+# Try clang-16 first, fall back to clang-14, then clang
+CLANG_PKG=""
+for ver in 16 14 ""; do
+  pkg="clang${ver:+-$ver}"
+  if apt-cache show "$pkg" &>/dev/null 2>&1; then
+    CLANG_PKG="$pkg"
+    break
+  fi
+done
+LLVM_PKG="${CLANG_PKG/clang/llvm}"
+
 PKGS=(
-  clang-16
-  llvm-16
+  "${CLANG_PKG:-clang}"
+  "${LLVM_PKG:-llvm}"
   libelf-dev
   libbpf-dev
   bpftool
   linux-headers-"$(uname -r)"
-  linux-tools-"$(uname -r)"
   build-essential
   pkg-config
   git
@@ -77,25 +113,21 @@ PKGS=(
   wget
   make
   jq
-  asciinema   # for recording terminal demos
 )
 
-# linux-tools may not exist for custom kernels — make it optional
-OPTIONAL_PKGS=(linux-tools-"$(uname -r)")
-
 for pkg in "${PKGS[@]}"; do
-  if dpkg -s "$pkg" &>/dev/null; then
+  if dpkg -s "$pkg" &>/dev/null 2>&1; then
     ok "$pkg already installed"
   else
     log "Installing $pkg..."
     if apt-get install -y -qq "$pkg" 2>/dev/null; then
       ok "$pkg installed"
     else
-      # Try without kernel-specific version for tools
       BASE_PKG=$(echo "$pkg" | sed "s/-$(uname -r)//")
       if [[ "$pkg" != "$BASE_PKG" ]]; then
         log "Retrying with base package $BASE_PKG..."
-        apt-get install -y -qq "$BASE_PKG" 2>/dev/null && ok "$BASE_PKG installed" || warn "Could not install $pkg or $BASE_PKG — continuing"
+        apt-get install -y -qq "$BASE_PKG" 2>/dev/null && ok "$BASE_PKG installed" \
+          || warn "Could not install $pkg or $BASE_PKG — continuing"
       else
         warn "Could not install $pkg — continuing"
       fi
@@ -106,9 +138,17 @@ done
 # ─── Clang symlink ───────────────────────────────────────────────────────────
 section "Setting up clang symlinks"
 if ! command -v clang &>/dev/null; then
-  update-alternatives --install /usr/bin/clang clang /usr/bin/clang-16 100
-  update-alternatives --install /usr/bin/llc   llc   /usr/bin/llc-16   100
-  ok "clang -> clang-16 symlink created"
+  if command -v clang-16 &>/dev/null; then
+    update-alternatives --install /usr/bin/clang clang /usr/bin/clang-16 100
+    update-alternatives --install /usr/bin/llc   llc   /usr/bin/llc-16   100
+    ok "clang -> clang-16 symlink created"
+  elif command -v clang-14 &>/dev/null; then
+    update-alternatives --install /usr/bin/clang clang /usr/bin/clang-14 100
+    update-alternatives --install /usr/bin/llc   llc   /usr/bin/llc-14   100
+    ok "clang -> clang-14 symlink created"
+  else
+    warn "No versioned clang found — install manually if BPF compilation fails"
+  fi
 else
   ok "clang already on PATH: $(clang --version | head -1)"
 fi
@@ -116,7 +156,7 @@ fi
 # ─── Go ──────────────────────────────────────────────────────────────────────
 section "Installing Go"
 GO_VERSION="1.22.4"
-GO_TARBALL="go${GO_VERSION}.linux-amd64.tar.gz"
+GO_TARBALL="go${GO_VERSION}.linux-${GO_ARCH}.tar.gz"
 GO_URL="https://go.dev/dl/${GO_TARBALL}"
 GO_INSTALL_DIR="/usr/local"
 
@@ -124,12 +164,11 @@ if command -v go &>/dev/null; then
   INSTALLED_GO=$(go version | awk '{print $3}' | sed 's/go//')
   ok "Go $INSTALLED_GO already installed"
 else
-  log "Downloading Go $GO_VERSION..."
+  log "Downloading Go $GO_VERSION for $GO_ARCH..."
   wget -q "$GO_URL" -O "/tmp/$GO_TARBALL"
   tar -C "$GO_INSTALL_DIR" -xzf "/tmp/$GO_TARBALL"
   rm "/tmp/$GO_TARBALL"
 
-  # Add to /etc/profile.d for all future shells
   cat > /etc/profile.d/go.sh <<'EOF'
 export PATH=$PATH:/usr/local/go/bin
 export GOPATH=$HOME/go
@@ -139,7 +178,6 @@ EOF
   ok "Go $GO_VERSION installed at /usr/local/go"
 fi
 
-# Ensure go is in PATH for this script
 export PATH=$PATH:/usr/local/go/bin
 
 # ─── goreleaser ──────────────────────────────────────────────────────────────
@@ -147,8 +185,8 @@ section "Installing goreleaser"
 if command -v goreleaser &>/dev/null; then
   ok "goreleaser already installed"
 else
-  log "Installing goreleaser..."
-  GORELEASER_URL="https://github.com/goreleaser/goreleaser/releases/latest/download/goreleaser_Linux_x86_64.tar.gz"
+  log "Installing goreleaser for $GORELEASER_ARCH..."
+  GORELEASER_URL="https://github.com/goreleaser/goreleaser/releases/latest/download/goreleaser_Linux_${GORELEASER_ARCH}.tar.gz"
   wget -q "$GORELEASER_URL" -O /tmp/goreleaser.tar.gz
   tar -C /usr/local/bin -xzf /tmp/goreleaser.tar.gz goreleaser
   rm /tmp/goreleaser.tar.gz
@@ -162,18 +200,6 @@ if command -v bpftool &>/dev/null; then
 else
   warn "bpftool not found — skeleton generation will not work."
   warn "Try: apt-get install linux-tools-$(uname -r)"
-fi
-
-# ─── Clone libbpf-bootstrap (reference) ─────────────────────────────────────
-section "Fetching libbpf-bootstrap"
-BOOTSTRAP_DIR="$HOME/libbpf-bootstrap"
-if [[ -d "$BOOTSTRAP_DIR" ]]; then
-  ok "libbpf-bootstrap already cloned at $BOOTSTRAP_DIR"
-else
-  log "Cloning libbpf-bootstrap..."
-  git clone --depth=1 --recurse-submodules \
-    https://github.com/libbpf/libbpf-bootstrap.git "$BOOTSTRAP_DIR"
-  ok "Cloned to $BOOTSTRAP_DIR"
 fi
 
 # ─── Generate vmlinux.h ──────────────────────────────────────────────────────
@@ -199,18 +225,19 @@ warn "  sudo setcap cap_bpf,cap_perfmon+ep ./tracery"
 # ─── Summary ─────────────────────────────────────────────────────────────────
 section "Environment Summary"
 echo ""
-printf "  %-20s %s\n" "OS:"        "$PRETTY_NAME"
-printf "  %-20s %s\n" "Kernel:"    "$(uname -r)"
-printf "  %-20s %s\n" "clang:"     "$(clang --version 2>/dev/null | head -1 || echo 'not found')"
-printf "  %-20s %s\n" "Go:"        "$(go version 2>/dev/null | awk '{print $3}' || echo 'not found')"
-printf "  %-20s %s\n" "bpftool:"   "$(bpftool version 2>/dev/null | head -1 || echo 'not found')"
+printf "  %-20s %s\n" "OS:"         "$PRETTY_NAME"
+printf "  %-20s %s\n" "Kernel:"     "$(uname -r)"
+printf "  %-20s %s\n" "Arch:"       "$ARCH (BPF target: $BPF_TARGET)"
+printf "  %-20s %s\n" "clang:"      "$(clang --version 2>/dev/null | head -1 || echo 'not found')"
+printf "  %-20s %s\n" "Go:"         "$(go version 2>/dev/null | awk '{print $3}' || echo 'not found')"
+printf "  %-20s %s\n" "bpftool:"    "$(bpftool version 2>/dev/null | head -1 || echo 'not found')"
 printf "  %-20s %s\n" "libbpf-dev:" "$(dpkg -s libbpf-dev 2>/dev/null | grep Version | awk '{print $2}' || echo 'not found')"
-printf "  %-20s %s\n" "BTF:"       "$(test -f /sys/kernel/btf/vmlinux && echo 'available' || echo 'MISSING')"
+printf "  %-20s %s\n" "BTF:"        "$(test -f /sys/kernel/btf/vmlinux && echo 'available' || echo 'MISSING')"
 echo ""
-ok "Setup complete. You're ready to build Tracery."
+ok "Setup complete. You are ready to build Tracery."
 echo ""
 echo -e "  ${BOLD}Next steps:${RESET}"
 echo "  1. cd ~/tracery"
 echo "  2. make build"
-echo "  3. sudo ./tracery count --pid \$(pgrep firefox)"
-echo ""s
+echo "  3. sudo ./tracery count --pid \$(pgrep bash)"
+echo ""

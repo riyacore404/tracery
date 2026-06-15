@@ -18,62 +18,61 @@ import (
 // arm64SyscallNr maps syscall names to ARM64 (aarch64) numbers.
 // Source: include/uapi/asm-generic/unistd.h
 var arm64SyscallNr = map[string]uint32{
-	"read":     63,
-	"write":    64,
-	"open":     56, // openat on arm64
-	"close":    57,
-	"openat":   56,
-	"mmap":     222,
-	"munmap":   215,
-	"brk":      214,
-	"futex":    98,
-	"recvfrom": 207,
-	"sendto":   206,
-	"connect":  203,
-	"accept":   202,
-	"accept4":  242,
-	"clone":    220,
-	"clone3":   435,
-	"execve":   221,
-	"wait4":    260,
-	"exit":     93,
-	"exit_group": 94,
-	"mprotect": 226,
-	"msync":    227,
-	"mlock":    228,
-	"munlock":  229,
-	"socket":   198,
-	"bind":     200,
-	"listen":   201,
-	"getpid":   172,
-	"gettid":   178,
-	"kill":     129,
-	"tgkill":   131,
-	"nanosleep": 101,
-	"clock_gettime": 113,
+	"read":            63,
+	"write":           64,
+	"open":            56,
+	"close":           57,
+	"openat":          56,
+	"mmap":            222,
+	"munmap":          215,
+	"brk":             214,
+	"futex":           98,
+	"recvfrom":        207,
+	"sendto":          206,
+	"connect":         203,
+	"accept":          202,
+	"accept4":         242,
+	"clone":           220,
+	"clone3":          435,
+	"execve":          221,
+	"wait4":           260,
+	"exit":            93,
+	"exit_group":      94,
+	"mprotect":        226,
+	"msync":           227,
+	"mlock":           228,
+	"munlock":         229,
+	"socket":          198,
+	"bind":            200,
+	"listen":          201,
+	"getpid":          172,
+	"gettid":          178,
+	"kill":            129,
+	"tgkill":          131,
+	"nanosleep":       101,
+	"clock_gettime":   113,
 	"clock_nanosleep": 115,
-	"gettimeofday": 169,
-	"pread64":  67,
-	"pwrite64": 68,
-	"readv":    65,
-	"writev":   66,
-	"lseek":    62,
-	"stat":     79, // newfstatat
-	"fstat":    80,
-	"getdents64": 61,
-	"pipe2":    59,
-	"dup":      23,
-	"dup3":     24,
-	"epoll_create1": 20,
-	"epoll_ctl":    21,
-	"epoll_pwait":  22,
-	"fcntl":    25,
-	"ioctl":    29,
-	"getrandom": 278,
-	"prctl":    167,
-	"sched_yield": 124,
-	"rt_sigaction": 134,
-	"rt_sigprocmask": 135,
+	"gettimeofday":    169,
+	"pread64":         67,
+	"pwrite64":        68,
+	"readv":           65,
+	"writev":          66,
+	"lseek":           62,
+	"fstat":           80,
+	"getdents64":      61,
+	"pipe2":           59,
+	"dup":             23,
+	"dup3":            24,
+	"epoll_create1":   20,
+	"epoll_ctl":       21,
+	"epoll_pwait":     22,
+	"fcntl":           25,
+	"ioctl":           29,
+	"getrandom":       278,
+	"prctl":           167,
+	"sched_yield":     124,
+	"rt_sigaction":    134,
+	"rt_sigprocmask":  135,
 }
 
 const maxBuckets = 32
@@ -90,13 +89,23 @@ func readHistogram(m *ebpf.Map) ([maxBuckets]uint64, error) {
 	return buckets, nil
 }
 
-// formatBucketRange converts a bucket index to a human-readable range label.
+// formatBucketRange converts a BPF histogram bucket index to a human-readable range.
+//
+// The BPF log2_bucket() function in latency.bpf.c counts right-shifts until
+// value reaches 1, so:
+//   bucket 0 = 0-1 ns      (value 0 or 1)
+//   bucket 1 = 1-2 ns      (value 2-3)
+//   bucket n = 2^n - 2^(n+1) ns
+//
+// Therefore the correct label for bucket n is: low=2^n, high=2^(n+1).
+// (Not 2^(n-1) to 2^n — that would be off by one.)
 func formatBucketRange(bucket int) string {
 	if bucket == 0 {
 		return "0 - 1ns"
 	}
-	low := math.Pow(2, float64(bucket-1))
-	high := math.Pow(2, float64(bucket))
+
+	low := math.Pow(2, float64(bucket))
+	high := math.Pow(2, float64(bucket+1))
 
 	formatVal := func(ns float64) string {
 		switch {
@@ -168,7 +177,8 @@ func printHistogram(buckets [maxBuckets]uint64, syscallName string, pid uint32, 
 	}
 
 	fmt.Println("─────────────────────────────────────────────────────────")
-	fmt.Println("Each row = one power-of-2 latency bucket (nanoseconds)")
+	fmt.Println("Each row = one power-of-2 latency bucket")
+	fmt.Println("Bucket n covers: 2^n ns to 2^(n+1) ns")
 }
 
 var latencyCmd = &cobra.Command{
@@ -198,7 +208,7 @@ Examples:
 				"unknown syscall %q\nsupported: read, write, openat, close, mmap, munmap, "+
 					"brk, futex, recvfrom, sendto, connect, accept, accept4, clone, clone3, "+
 					"execve, wait4, mprotect, socket, bind, listen, nanosleep, "+
-					"clock_gettime, getrandom, prctl, sched_yield",
+					"clock_gettime, getrandom, prctl, sched_yield, fcntl, ioctl",
 				syscallArg,
 			)
 		}
