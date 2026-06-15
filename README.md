@@ -40,7 +40,7 @@ make build
 # 3. Run
 bash workload.sh &
 sudo ./tracery count --pid $!
-```
+````
 
 ---
 
