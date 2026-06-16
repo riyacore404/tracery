@@ -16,18 +16,17 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s -w
-      - -X main.version={{.Version}}
-      - -X main.commit={{.Commit}}
-      - -X main.date={{.Date}}
 
 archives:
   - id: tracery
-    formats: [tar.gz]
+    formats:
+      - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE
-      - examples/*.yaml
+      - src: examples/*.yaml
+        dst: examples
 
 checksum:
   name_template: "checksums.txt"
@@ -38,26 +37,6 @@ release:
     name: tracery
   draft: false
   prerelease: auto
-  name_template: "v{{.Version}}"
-  header: |
-    ## Tracery {{.Version}}
-
-    eBPF-based Linux syscall and performance tracer for ARM64 and x86_64.
-
-    ### Install
-    ```bash
-    # ARM64
-    curl -fsSL https://github.com/riyacore404/tracery/releases/download/{{.Tag}}/tracery_{{.Version}}_linux_arm64.tar.gz | tar xz
-    sudo ./tracery count --pid <PID>
-
-    # x86_64
-    curl -fsSL https://github.com/riyacore404/tracery/releases/download/{{.Tag}}/tracery_{{.Version}}_linux_amd64.tar.gz | tar xz
-    sudo ./tracery count --pid <PID>
-    ```
-
-    ### Requirements
-    - Linux 5.8+ with BTF (`ls /sys/kernel/btf/vmlinux`)
-    - Root or CAP_BPF
 
 changelog:
   sort: asc

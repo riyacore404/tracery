@@ -5,12 +5,13 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   release:
     name: goreleaser
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
@@ -30,17 +31,18 @@ jobs:
             libbpf-dev \
             libelf-dev \
             linux-headers-$(uname -r) \
-            linux-tools-common \
-            linux-tools-$(uname -r) || true
+            linux-tools-common || true
+          sudo apt-get install -y linux-tools-$(uname -r) || true
           sudo update-alternatives \
             --install /usr/bin/clang clang /usr/bin/clang-14 100
 
       - name: Generate vmlinux.h
         run: |
-          if [ -f /sys/kernel/btf/vmlinux ]; then
+          if command -v bpftool &>/dev/null && [ -f /sys/kernel/btf/vmlinux ]; then
             bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+            echo "Generated fresh vmlinux.h"
           else
-            echo "BTF not available — using pre-generated vmlinux.h"
+            echo "Using pre-generated vmlinux.h from repo"
           fi
 
       - name: Build BPF objects
@@ -52,8 +54,7 @@ jobs:
       - name: Run goreleaser
         uses: goreleaser/goreleaser-action@v6
         with:
-          distribution: goreleaser
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
