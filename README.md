@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/riyacore404/tracery/main/setup.sh |
 # 2. Clone and build
 git clone https://github.com/riyacore404/tracery.git
 cd tracery
-make build
+make all
 
 # 3. Run
 bash workload.sh &
