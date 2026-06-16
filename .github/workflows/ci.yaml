@@ -55,6 +55,7 @@ jobs:
         run: |
           if [ -f /sys/kernel/btf/vmlinux ]; then
             bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+            echo "Generated vmlinux.h from running kernel"
           else
             echo "BTF not available — using pre-generated vmlinux.h"
           fi
