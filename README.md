@@ -44,6 +44,15 @@ sudo ./tracery count --pid $!
 
 ---
 
+### Binary install (no build required)
+
+```bash
+curl -fsSL https://github.com/riyacore404/tracery/releases/latest/download/tracery_0.1.0_linux_arm64.tar.gz | tar xz
+sudo ./tracery --help
+```
+
+---
+
 ## Features
 
 - Live syscall frequency tracking
