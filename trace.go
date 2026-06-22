@@ -19,6 +19,7 @@ import (
 
 	"github.com/riyacore/tracery/internal/output"
 	"github.com/riyacore/tracery/internal/probe"
+	"github.com/riyacore/tracery/internal/aggregator"
 )
 
 var (
@@ -84,6 +85,14 @@ func runTrace(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println("\n✓ Config is valid — dry run complete, no probes attached.")
 		return nil
+	}
+
+	// ── uprobe dispatch ─────────────────────────────────────────────────────
+	// uprobe family probes use their own attach/consume path (no stack
+	// capture); everything else falls through to the existing kprobe/
+	// tracepoint stack-tracer flow below unchanged.
+	if len(cfg.Probes) > 0 && isUprobeFamily(cfg.Probes[0].Type) {
+		return runUprobeTrace(cfg, cfg.Probes[0], uint32(tracePIDFlag))
 	}
 
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -215,5 +224,77 @@ func runTrace(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("✓ Flame graph written to %s — open at speedscope.app\n", traceOutputPath)
 	fmt.Printf("  %d stack samples collected\n", len(samples))
+	return nil
+}
+
+func isUprobeFamily(t string) bool {
+	return t == "uprobe" || t == "uprobe_pair" || t == "uretprobe"
+}
+
+func runUprobeTrace(cfg probe.ProbeConfig, p probe.ProbeEntry, pid uint32) error {
+	var probeID uint32
+	switch p.Type {
+	case "uprobe":
+		probeID = aggregator.PROBE_ID_UPROBE_ENTRY
+	case "uprobe_pair":
+		probeID = aggregator.PROBE_ID_UPROBE_PAIR
+	case "uretprobe":
+		probeID = aggregator.PROBE_ID_URETPROBE
+	}
+
+	att, err := probe.AttachUprobe(p.Type, p.Binary, p.Symbol, pid, probeID)
+	if err != nil {
+		return fmt.Errorf("attaching uprobe: %w", err)
+	}
+	defer att.Collection.Close()
+	defer func() { _ = att.Close() }()
+
+	rd, err := ringbuf.NewReader(att.Collection.Maps["events"])
+	if err != nil {
+		return fmt.Errorf("opening ring buffer: %w", err)
+	}
+	defer func() { _ = rd.Close() }()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sig
+		log.Info().Msg("shutting down uprobe trace")
+		_ = rd.Close()
+	}()
+
+	fmt.Printf("Tracing %s in %s (PID %d) — Ctrl+C to stop\n", p.Symbol, p.Binary, pid)
+
+	var count int
+	for {
+		record, err := rd.Read()
+		if err != nil {
+			if errors.Is(err, ringbuf.ErrClosed) {
+				break
+			}
+			log.Error().Err(err).Msg("ring buffer read error")
+			continue
+		}
+
+		ev, err := aggregator.ParseUprobeEvent(record.RawSample)
+		if err != nil {
+			log.Debug().Err(err).Msg("failed to parse uprobe event")
+			continue
+		}
+		count++
+
+		switch p.Type {
+		case "uprobe_pair":
+			fmt.Printf("[%s] pid=%d latency=%dns retval=%v\n",
+				ev.Label, ev.PID, ev.Fields["latency_ns"], ev.Fields["retval"])
+		case "uretprobe":
+			fmt.Printf("[%s] pid=%d retval=%v\n", ev.Label, ev.PID, ev.Fields["retval"])
+		default:
+			fmt.Printf("[%s] pid=%d comm=%s arg0=%v arg1=%v\n",
+				ev.Label, ev.PID, ev.Fields["comm"], ev.Fields["arg0"], ev.Fields["arg1"])
+		}
+	}
+
+	fmt.Printf("✓ %d events captured\n", count)
 	return nil
 }

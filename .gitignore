@@ -5,3 +5,8 @@ mini/libbpf-bootstrap/
 mini/02-bpf-hello/
 mini/03-ring-buffer/
 mini/04-latency/
+flamegraph.json
+out.json
+demo.gif
+*.bpf.o
+tracery

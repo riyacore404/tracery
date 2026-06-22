@@ -1,0 +1,23 @@
+name: uprobe-entry-trace
+description: Fires on every call to a target function, captures first two args
+version: "1.0"
+
+probes:
+  - name: entry_trace
+    type: uprobe
+    binary: /usr/local/bin/myservice
+    symbol: main.processOrder
+    fields:
+      - name: arg0
+        type: u64
+        source: payload
+      - name: arg1
+        type: u64
+        source: payload
+    output:
+      label: PROCESS_ORDER
+      format: log
+
+output:
+  format: json
+  timestamp: true

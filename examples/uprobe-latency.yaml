@@ -1,0 +1,31 @@
+# Description: Measures latency of a user-space function call by symbol name.
+# Use case: Trace a specific business-logic function inside a running service
+#           binary without modifying its code or restarting it.
+# Usage: sudo tracery trace --config examples/uprobe-latency.yaml --pid 1234
+# Expected output: A latency histogram for each call to the target symbol,
+#           plus the captured return value.
+
+name: uprobe-handler-latency
+description: Latency of handleRequest() in the target service binary
+version: "1.0"
+
+probes:
+  - name: handle_request_latency
+    type: uprobe_pair
+    binary: /usr/local/bin/myservice
+    symbol: main.handleRequest
+    fields:
+      - name: latency_ns
+        type: u64
+        source: latency
+      - name: retval
+        type: s64
+        source: retval
+    output:
+      label: HANDLE_REQUEST
+      format: histogram
+
+output:
+  format: table
+  timestamp: true
+  interval: 1s

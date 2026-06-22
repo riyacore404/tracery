@@ -136,3 +136,4 @@ output:
       - label: "Auth errors"
         aggregate: count
         filter_label: AUTH_ERROR
+

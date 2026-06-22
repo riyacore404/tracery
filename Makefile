@@ -38,7 +38,7 @@ all: bpf build
 # ── BPF compilation ───────────────────────────────────────────────────────────
 bpf: $(BPF_OBJS)
 
-bpf/%.bpf.o: bpf/%.bpf.c bpf/vmlinux.h
+bpf/%.bpf.o: bpf/%.bpf.c bpf/events.h bpf/vmlinux.h
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 # ── Go binary ─────────────────────────────────────────────────────────────────

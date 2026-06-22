@@ -1,0 +1,3 @@
+#define PROBE_ID_UPROBE_ENTRY     10
+#define PROBE_ID_UPROBE_PAIR      11
+#define PROBE_ID_URETPROBE        12
