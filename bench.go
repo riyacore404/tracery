@@ -225,11 +225,6 @@ func runBench(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 		fmt.Println("  Use --workload instead for wall-clock measurement:")
 		fmt.Println("    sudo tracery bench --workload \"bash workload.sh\" --duration 10s")
-		fmt.Println()
-		fmt.Println("  Measured results on this machine (3-run median):")
-		fmt.Println("    Baseline:  73.5s")
-		fmt.Println("    strace:    148.5s  (+102%, 2.0× slower)")
-		fmt.Println("    Tracery:   ~72s    (<2%, within noise)")
 		fmt.Println("────────────────────────────────────────────────────────")
 		fmt.Println()
 		return nil
