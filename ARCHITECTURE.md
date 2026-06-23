@@ -52,7 +52,7 @@ Tracery is split into two halves separated by the kernel/userspace boundary:
   │                                                                 │
   │  ┌──────────┐  ┌───────────┐  ┌────────────────┐             │
   │  │  kprobe  │  │tracepoint │  │    uprobe      │             │
-  │  │(sys_enter│  │(sched/mm) │  │(user fn attach)│             │
+  │  │(sys_enter)│  │(sched/mm) │  │(user fn attach)│             │
   │  └────┬─────┘  └─────┬─────┘  └───────┬────────┘             │
   │       └──────────────┴────────────────┘                       │
   │                       │ fires BPF program                      │
@@ -127,6 +127,31 @@ struct event_t {
 ```
 
 The struct is **fixed-size**. Variable-length strings are truncated to fit `payload[64]`. This is intentional — variable-length ring buffer records add significant complexity with minimal benefit for the data Tracery captures.
+
+---
+
+```markdown
+### uprobe Programs
+
+`bpf/uprobe.bpf.c` is a self-contained BPF object (it does not share
+`event_t` with the kernel-probe programs — see Known Limitations on why).
+It implements three attach points:
+
+- `handle_uprobe_entry` — fires on function entry only. Captures the
+  first two argument registers (`PT_REGS_PARM1`/`PARM2`) into the
+  event's `payload` field.
+- `handle_uprobe_pair_entry` / `handle_uprobe_pair_exit` — a paired
+  uprobe + uretprobe. Entry stashes a timestamp in a per-TID hash map
+  (the same pattern M2 uses for syscall latency); exit computes the
+  delta and reads the return value via `PT_REGS_RC`.
+- `handle_uretprobe_only` — fires on return only, for return-value
+  capture without latency measurement.
+
+Symbol-to-address resolution happens in Go via `debug/elf`, then
+`cilium/ebpf`'s `link.OpenExecutable().Uprobe()` / `.Uretprobe()`
+computes the runtime attach address — Tracery's BPF C code never deals
+with binary offsets directly.
+```
 
 ---
 
@@ -520,6 +545,7 @@ The 64-byte `payload` field covers the common cases (path prefix, flag values, a
 | Ring buffer overflow is silent | Events dropped at high syscall rates | Monitor drop counter; increase `--ring-buffer-size` |
 | CO-RE requires BTF in kernel | Custom kernels without BTF not supported | Rebuild kernel with `CONFIG_DEBUG_INFO_BTF=y` |
 | uprobe overhead is higher | uprobe is 3-5x more expensive than kprobe | Use sparingly; profile only target functions |
+| `uretprobe`/`uprobe_pair` can crash Go target binaries | Go's stack-moving garbage collector can corrupt scheduler state when the kernel's return-probe trampoline fires mid-stack-growth | Use plain `uprobe` (entry-only) for Go targets; `uprobe_pair`/`uretprobe` are safe on C/C++/Rust binaries with fixed stacks |
 | No network packet capture | Not a replacement for tcpdump/XDP | Combine with `tcpdump` for network analysis |
 | Hardware PMU unavailable in VMs | `tracery bench` instruction-count mode doesn't work on VirtualBox/most cloud VMs | Use wall-clock mode (automatic fallback) or run on bare metal / KVM with `-cpu host,+pmu` |
 

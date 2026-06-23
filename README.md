@@ -152,6 +152,46 @@ Example histogram:
 
 ---
 
+### tracery trace
+
+Run a YAML-defined set of probes — the most flexible command. Supports
+kernel-side probes (tracepoints, kprobes) and user-space probes (uprobes)
+in the same config format.
+
+````bash
+sudo tracery trace --config examples/uprobe-latency.yaml --pid 1234
+
+sudo tracery trace --config examples/uprobe-latency.yaml --pid 1234 --dry-run
+````
+
+Supported probe types:
+
+| Type | Hook Point | Use Case |
+|---|---|---|
+| `tracepoint` | Stable kernel tracepoints | Preferred for kernel events — stable across kernel versions |
+| `kprobe` | Dynamic kernel function entry | When no tracepoint exists |
+| `kprobe_pair` | kprobe entry + exit | Kernel-side latency measurement |
+| `uprobe` | User-space function entry, by symbol name | Trace a specific function inside any running binary, no recompilation needed |
+| `uprobe_pair` | User-space function entry + exit | Latency measurement on a user-space function call |
+| `uretprobe` | User-space function return only | Capture return values without measuring latency |
+
+Example output (uprobe_pair against a traced function):
+
+````text
+Tracing main.handleRequest in /usr/local/bin/myservice (PID 1234) — Ctrl+C to stop
+[UPROBE_PAIR] pid=1234 latency=10187223ns retval=3
+[UPROBE_PAIR] pid=1234 latency=10494057ns retval=3
+✓ 14 events captured
+````
+
+> **Note:** `uprobe_pair` and `uretprobe` attach a return-probe trampoline that
+> can crash Go binaries due to interaction with Go's stack-moving garbage
+> collector. Use plain `uprobe` (entry-only) when tracing Go targets.
+> `uprobe_pair`/`uretprobe` work cleanly against C/C++/Rust binaries with
+> fixed stacks.
+
+---
+
 ### tracery events
 
 Stream kernel events in real time.
@@ -325,9 +365,24 @@ tracery/
 │   ├── syscall_counter.bpf.c
 │   ├── latency.bpf.c
 │   ├── events.bpf.c
+|   ├── stack.bpf.c
+│   ├── uprobe.bpf.c
+│   ├── events.h
 │   └── vmlinux.h
 │
 ├── internal/
+|   ├── aggregator/
+│   │   ├── types.go
+|   |   └── uprobe.go
+|   |
+|   ├── output/
+│   │   ├── flamegraph.go
+|   |   └── symbols.go
+|   |
+|   ├── probe/
+│   │   ├── uprobe.go
+|   |   └── yaml.go
+|   |
 │   ├── bpf/
 │   │   └── loader.go
 │   │
@@ -356,13 +411,18 @@ tracery/
 - [x] GitHub Actions CI
 - [x] Goreleaser single-binary releases
 
+### M6 ✓
+
+- [x] User-space function tracing (uprobes, uprobe_pair, uretprobe)
+- [x] ELF symbol resolution for uprobe attachment
+
 ### Future
 
 - [ ] Interactive TUI dashboard (Bubble Tea)
-- [ ] User-space function tracing (uprobes)
 - [ ] Network event tracing
 - [ ] Container-aware filtering
 - [ ] Hardware PMU overhead measurement on bare-metal (instruction-count delta via `perf_event_open`)
+- [ ] Stack-safe uretprobe handling for managed runtimes (Go, JVM)
 
 ---
 
