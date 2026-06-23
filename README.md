@@ -67,14 +67,32 @@ sudo ./tracery --help
 
 ## Why Tracery?
 
-### Benchmark: overhead on a fork/exec-heavy workload (100k iterations, 3 runs each)
+### Benchmark: overhead on a fork/exec-heavy workload (100k iterations of `cat /dev/null`)
 
-| Tool | Mechanism | Median wall time | Overhead | Structured Output |
-|------|-----------|-----------------|----------|-------------------|
-| Baseline | — | 73.5s | — | — |
-| strace | ptrace | 148.5s | **+102% (2.0× slower)** | No |
-| perf | sampling | ~5–15% | Low | Limited |
-| **Tracery** | **eBPF** | **~72s** | **<2% (within noise)** | **Yes** |
+| Tool        | Mechanism | Wall time vs. baseline      | Overhead                          | Structured Output |
+| ----------- | --------- | ---------------------------- | ---------------------------------- | ----------------- |
+| Baseline    | —         | 72–76s (3 clean runs)        | —                                   | —                  |
+| `strace -f` | ptrace    | 46–282s across runs          | **2×–6× slower, highly variable**  | No                 |
+| perf        | sampling  | ~5–15%                       | Low                                 | Limited            |
+| **Tracery** | **eBPF**  | **~same as baseline**        | **<3% (within measurement noise)** | **Yes**            |
+
+Measured on a resource-constrained VirtualBox VM (4 vCPU, 3.2GB RAM,
+Ubuntu 24.04, kernel 6.x). Tracery's wall-clock time consistently tracked
+the untraced baseline within noise across all runs. `strace -f`'s overhead
+varied substantially between runs (2×–6×) — `-f` (follow forks) is
+memory-hungry, and on this VM, `free -h` showed swap actively in use during
+benchmark runs, which compounds `strace`'s already-high cost non-linearly.
+The qualitative result — eBPF-based tracing adds negligible overhead while
+ptrace-based tracing materially and unpredictably slows execution — held
+across every run; the exact multiplier is sensitive to available memory and
+will be re-measured on a cleaner/bare-metal host in a future update.
+
+> **Note on hardware counters:** `perf_event_open(PERF_COUNT_HW_INSTRUCTIONS)`
+> requires bare-metal or a PMU-enabled hypervisor. On VirtualBox and many
+> cloud VMs, hardware counters are not exposed; `tracery bench --pid <pid>`
+> detects this and points you to `tracery bench --workload "<cmd>"` for a
+> wall-clock measurement instead, rather than printing a result it can't
+> actually measure.
 
 Workload: `bash workload.sh` (100k iterations of `cat /dev/null`), measured on
 Ubuntu 24.04, kernel 6.x, VirtualBox VM. strace was run with `-o /dev/null`
