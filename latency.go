@@ -8,11 +8,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cilium/ebpf"
-	"github.com/cilium/ebpf/link"
-	"github.com/cilium/ebpf/rlimit"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+
+	bpfloader "github.com/riyacore/tracery/internal/bpf"
 )
 
 // arm64SyscallNr maps syscall names to ARM64 (aarch64) numbers.
@@ -77,18 +76,6 @@ var arm64SyscallNr = map[string]uint32{
 
 const maxBuckets = 32
 
-// readHistogram reads all 32 buckets from the BPF array map.
-func readHistogram(m *ebpf.Map) ([maxBuckets]uint64, error) {
-	var buckets [maxBuckets]uint64
-	for i := uint32(0); i < maxBuckets; i++ {
-		var val uint64
-		if err := m.Lookup(&i, &val); err == nil {
-			buckets[i] = val
-		}
-	}
-	return buckets, nil
-}
-
 // formatBucketRange converts a BPF histogram bucket index to a human-readable range.
 //
 // The BPF log2_bucket() function in latency.bpf.c counts right-shifts until
@@ -98,7 +85,6 @@ func readHistogram(m *ebpf.Map) ([maxBuckets]uint64, error) {
 //   bucket n = 2^n - 2^(n+1) ns
 //
 // Therefore the correct label for bucket n is: low=2^n, high=2^(n+1).
-// (Not 2^(n-1) to 2^n — that would be off by one.)
 func formatBucketRange(bucket int) string {
 	if bucket == 0 {
 		return "0 - 1ns"
@@ -219,79 +205,25 @@ Examples:
 			Uint32("syscall_nr", syscallNr).
 			Msg("starting latency tracer")
 
-		if err := rlimit.RemoveMemlock(); err != nil {
-			return fmt.Errorf("removing memlock: %w", err)
-		}
-
-		spec, err := ebpf.LoadCollectionSpec("bpf/latency.bpf.o")
-		if err != nil {
-			return fmt.Errorf("loading BPF spec: %w", err)
-		}
-
-		if err := spec.RewriteConstants(map[string]interface{}{
-			"target_pid":     pid,
-			"target_syscall": syscallNr,
-		}); err != nil {
-			return fmt.Errorf("setting constants: %w", err)
-		}
-
-		coll, err := ebpf.NewCollection(spec)
-		if err != nil {
-			return fmt.Errorf("loading BPF collection: %w", err)
-		}
-		defer coll.Close()
-
-		enterTP, err := link.Tracepoint("raw_syscalls", "sys_enter",
-			coll.Programs["handle_enter"], nil)
-		if err != nil {
-			return fmt.Errorf("attaching sys_enter: %w", err)
-		}
-		defer func() {
-			if err := enterTP.Close(); err != nil {
-				log.Warn().Err(err).Msg("error closing enterTP")
-			}
-		}()
-
-		exitTP, err := link.Tracepoint("raw_syscalls", "sys_exit",
-			coll.Programs["handle_exit"], nil)
-		if err != nil {
-			return fmt.Errorf("attaching sys_exit: %w", err)
-		}
-		defer func() {
-			if err := exitTP.Close(); err != nil {
-				log.Warn().Err(err).Msg("error closing exitTP")
-			}
-		}()
-
-		log.Info().
-			Str("syscall", syscallArg).
-			Uint32("nr", syscallNr).
-			Msg("latency tracer attached — collecting data")
-
-		histMap := coll.Maps["histogram"]
-
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-
-		ticker := time.NewTicker(time.Duration(interval) * time.Second)
-		defer ticker.Stop()
+		stop := make(chan struct{})
+		go func() {
+			<-sig
+			log.Info().Msg("shutting down latency tracer")
+			close(stop)
+		}()
 
 		elapsed := 0
-		for {
-			select {
-			case <-sig:
-				log.Info().Msg("shutting down latency tracer")
-				return nil
-			case <-ticker.C:
-				elapsed += interval
-				buckets, err := readHistogram(histMap)
-				if err != nil {
-					log.Error().Err(err).Msg("failed to read histogram")
-					continue
-				}
-				printHistogram(buckets, syscallArg, pid, elapsed)
-			}
+		err := bpfloader.PollLatencyHistogram(pid, syscallNr, time.Duration(interval)*time.Second, func(buckets [bpfloader.MaxLatencyBuckets]uint64) {
+			elapsed += interval
+			printHistogram(buckets, syscallArg, pid, elapsed)
+		}, stop)
+
+		if err != nil {
+			return fmt.Errorf("latency tracer failed: %w", err)
 		}
+		return nil
 	},
 }
 

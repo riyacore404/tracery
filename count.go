@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 
-	"github.com/cilium/ebpf"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 
@@ -347,27 +345,6 @@ type JSONOutput struct {
 	Syscalls []syscallCount `json:"syscalls"`
 }
 
-func readCounts(m *ebpf.Map) ([]syscallCount, error) {
-	var counts []syscallCount
-	iter := m.Iterate()
-	var nr uint32
-	var count uint64
-	for iter.Next(&nr, &count) {
-		counts = append(counts, syscallCount{
-			Nr:    nr,
-			Name:  syscallName(nr),
-			Count: count,
-		})
-	}
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("iterating syscall map: %w", err)
-	}
-	sort.Slice(counts, func(i, j int) bool {
-		return counts[i].Count > counts[j].Count
-	})
-	return counts, nil
-}
-
 func printTable(counts []syscallCount, pid uint32, elapsed int) {
 	fmt.Print("\033[2J\033[H")
 	fmt.Printf("tracery count — PID %d — %ds elapsed\n", pid, elapsed)
@@ -430,54 +407,44 @@ Examples:
 			return fmt.Errorf("--output must be 'table', 'json', or 'csv', got %q", output)
 		}
 
-		log.Info().
-			Uint32("pid", pid).
-			Str("output", output).
-			Int("interval_s", interval).
-			Msg("starting syscall counter")
-
-		tracer, err := bpfloader.NewTracer("bpf/syscall_counter.bpf.o", pid)
-		if err != nil {
-			return fmt.Errorf("failed to start tracer: %w", err)
-		}
-		defer tracer.Close()
+		log.Info().Uint32("pid", pid).Str("output", output).Int("interval_s", interval).Msg("starting syscall counter")
 
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-
-		ticker := time.NewTicker(time.Duration(interval) * time.Second)
-		defer ticker.Stop()
+		stop := make(chan struct{})
+		go func() {
+			<-sig
+			log.Info().Msg("received signal — shutting down")
+			close(stop)
+		}()
 
 		elapsed := 0
 		csvHeaderPrinted := false
 
-		for {
-			select {
-			case <-sig:
-				log.Info().Msg("received signal — shutting down")
-				return nil
-
-			case <-ticker.C:
-				elapsed += interval
-				counts, err := readCounts(tracer.CountsMap)
-				if err != nil {
-					log.Error().Err(err).Msg("failed to read syscall counts")
-					continue
-				}
-
-				switch output {
-				case "json":
-					if err := printJSON(counts, pid, elapsed); err != nil {
-						log.Error().Err(err).Msg("failed to write JSON output")
-					}
-				case "csv":
-					printCSV(counts, pid, elapsed, !csvHeaderPrinted)
-					csvHeaderPrinted = true
-				default:
-					printTable(counts, pid, elapsed)
-				}
+		err := bpfloader.PollSyscallCounts(pid, time.Duration(interval)*time.Second, syscallName, func(rawCounts []bpfloader.SyscallCount) {
+			elapsed += interval
+			counts := make([]syscallCount, len(rawCounts))
+			for i, c := range rawCounts {
+				counts[i] = syscallCount{Nr: c.Nr, Name: c.Name, Count: c.Count}
 			}
+
+			switch output {
+			case "json":
+				if err := printJSON(counts, pid, elapsed); err != nil {
+					log.Error().Err(err).Msg("failed to write JSON output")
+				}
+			case "csv":
+				printCSV(counts, pid, elapsed, !csvHeaderPrinted)
+				csvHeaderPrinted = true
+			default:
+				printTable(counts, pid, elapsed)
+			}
+		}, stop)
+
+		if err != nil {
+			return fmt.Errorf("failed to start tracer: %w", err)
 		}
+		return nil
 	},
 }
 
