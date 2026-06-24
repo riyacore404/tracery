@@ -23,8 +23,11 @@ var dashboardCmd = &cobra.Command{
 	RunE:    runDashboard,
 }
 
+var dashboardSyscall string
+
 func init() {
 	dashboardCmd.Flags().IntVar(&dashboardPID, "pid", 0, "Target process PID (required)")
+	dashboardCmd.Flags().StringVar(&dashboardSyscall, "syscall", "read", "syscall to track in the latency tab")
 	if err := dashboardCmd.MarkFlagRequired("pid"); err != nil {
 		panic(err)
 	}
@@ -58,7 +61,10 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 	go func() {
 		// Default to "read" latency in the dashboard's latency tab; could be
 		// made a --syscall flag on dashboardCmd later.
-		nr := arm64SyscallNr["read"]
+		nr, ok := arm64SyscallNr[dashboardSyscall]
+		if !ok {
+			nr = arm64SyscallNr["read"] // fallback
+		}
 		_ = bpfloader.PollLatencyHistogram(pid, nr, time.Second, func(buckets [bpfloader.MaxLatencyBuckets]uint64) {
 			rows := make([]tui.LatencyBucket, 0, bpfloader.MaxLatencyBuckets)
 			for i, c := range buckets {
