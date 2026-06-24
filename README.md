@@ -230,6 +230,24 @@ Supported event categories:
 
 ---
 
+### tracery dashboard
+
+Live full-screen TUI combining syscall counts, latency histogram, and
+event stream in one tabbed view.
+
+```bash
+sudo tracery dashboard --pid 1234
+sudo tracery dashboard --pid 1234 --syscall clone
+```
+
+Keys: `1`/`2`/`3` or `Tab` to switch views, `q` or `Ctrl+C` to quit.
+
+Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea); reads
+from the same BPF pollers (`internal/bpf/poll.go`) used by `count`,
+`latency`, and `events` — no duplicated kernel-attach logic.
+
+---
+
 ## Architecture
 
 ```text
@@ -434,9 +452,11 @@ tracery/
 - [x] User-space function tracing (uprobes, uprobe_pair, uretprobe)
 - [x] ELF symbol resolution for uprobe attachment
 
+### M7 ✓
+- [x] Interactive TUI dashboard (Bubble Tea) — tabbed syscalls/latency/events view
+
 ### Future
 
-- [ ] Interactive TUI dashboard (Bubble Tea)
 - [ ] Network event tracing
 - [ ] Container-aware filtering
 - [ ] Hardware PMU overhead measurement on bare-metal (instruction-count delta via `perf_event_open`)
