@@ -232,19 +232,43 @@ Supported event categories:
 
 ### tracery dashboard
 
-Live full-screen TUI combining syscall counts, latency histogram, and
-event stream in one tabbed view.
+Live full-screen TUI combining syscall counts, a latency histogram, and
+a real-time event stream into one tabbed view — built on top of the same
+BPF pollers used by `count`, `latency`, and `events`, so there's no
+duplicated kernel-attach logic between the plain CLI commands and the TUI.
 
-```bash
+`````bash
 sudo tracery dashboard --pid 1234
 sudo tracery dashboard --pid 1234 --syscall clone
-```
+`````
 
-Keys: `1`/`2`/`3` or `Tab` to switch views, `q` or `Ctrl+C` to quit.
+Keys: `1` / `2` / `3` or `Tab` to switch views, `q` or `Ctrl+C` to quit.
 
-Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea); reads
-from the same BPF pollers (`internal/bpf/poll.go`) used by `count`,
-`latency`, and `events` — no duplicated kernel-attach logic.
+The `--syscall` flag controls which syscall the Latency tab tracks
+(default: `read`). Pick whichever syscall is actually frequent in your
+target workload — e.g. `clone` for fork-heavy workloads, `read` for I/O-bound
+ones — otherwise the Latency tab will show "(no data yet)" if the default
+syscall is rarely called by the traced process.
+
+Example output (Syscalls tab):
+
+`````text
+tracery dashboard    pid=247747
+Syscalls   Latency   Events
+
+SYSCALL                  COUNT
+─────────────────────────────────
+rt_sigprocmask           845768  ████████████████████████████████████████
+rt_sigaction             153776  ████████
+wait4                    153776  ████████
+rt_sigreturn              76888  ████
+ioctl                     76888  ████
+clone                     76888  ████
+
+[1] syscalls  [2] latency  [3] events  [tab] switch  [q] quit
+`````
+
+Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
 ---
 
@@ -420,14 +444,23 @@ tracery/
 |   |   └── yaml.go
 |   |
 │   ├── bpf/
-│   │   └── loader.go
-│   │
-│   └── logger/
-│       └── logger.go
+|   |   ├── loader.go
+|   |   └── poll.go          — shared BPF attach + poll logic
+│   │                          (PollSyscallCounts, PollLatencyHistogram, PollEvents)
+|   ├── logger/
+│   |    └── logger.go
+|   |
+│   └── tui/
+│       ├── model.go          — Bubble Tea Model/Update/View
+│       ├── styles.go
+│       ├── syscalls_view.go
+│       ├── latency_view.go
+│       └── events_view.go
 │
 ├── count.go
 ├── latency.go
 ├── events.go
+├── dashboard.go  
 ├── main.go
 └── Makefile
 ```
@@ -453,7 +486,8 @@ tracery/
 - [x] ELF symbol resolution for uprobe attachment
 
 ### M7 ✓
-- [x] Interactive TUI dashboard (Bubble Tea) — tabbed syscalls/latency/events view
+
+- [x] Interactive TUI dashboard (Bubble Tea) — tabbed syscalls/latency/events view, shares pollers with CLI commands
 
 ### Future
 
@@ -461,6 +495,7 @@ tracery/
 - [ ] Container-aware filtering
 - [ ] Hardware PMU overhead measurement on bare-metal (instruction-count delta via `perf_event_open`)
 - [ ] Stack-safe uretprobe handling for managed runtimes (Go, JVM)
+- [ ] Dashboard: auto-select highest-frequency syscall for the Latency tab instead of requiring --syscall
 
 ---
 

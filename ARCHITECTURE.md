@@ -330,6 +330,72 @@ internal/
     registry.go    — probe type → BPF attach call mapping
 ```
 
+---
+
+## TUI Dashboard
+
+`tracery dashboard` is a Bubble Tea-based terminal UI that combines all
+three live views (syscalls, latency, events) into one tabbed interface.
+It deliberately does **not** duplicate any kernel-attach or polling logic
+— it calls the exact same functions the plain CLI commands use.
+
+### Shared poller layer
+
+`internal/bpf/poll.go` is the single source of truth for attaching BPF
+programs and reading their output on an interval:
+
+```go
+PollSyscallCounts(pid, interval, nameFn, onUpdate, stop)
+PollLatencyHistogram(pid, syscallNr, interval, onUpdate, stop)
+PollEvents(pid, typeFilter, onEvent, stop)
+```
+
+`count.go`, `latency.go`, and `events.go` each call one of these and
+render the result as a plain-text table/histogram/log to stdout.
+`dashboard.go` calls the same three functions but instead sends the
+result into a running Bubble Tea program via `p.Send(...)`, as a
+`tea.Msg`. This means a bug fix or behavior change in attach logic only
+ever needs to happen in one place.
+
+### Model/Update/View (Elm architecture)
+
+Bubble Tea follows the Elm architecture: a `Model` holds all state, an
+`Update` function transforms state in response to messages, and a `View`
+function renders the current state to a string every frame.
+
+````
+┌──────────────┐   tea.Msg    ┌──────────────┐   string    ┌──────────┐
+│  Poller      │─────────────▶│  Update()    │────────────▶│  View()  │
+│  goroutines  │  p.Send(...) │  (Model)     │  re-render  │ (string) │
+└──────────────┘              └──────────────┘             └──────────┘
+````
+
+Three goroutines run concurrently, one per data source (syscalls, latency,
+events), each calling its respective `Poll*` function with a `stop`
+channel for clean shutdown. Each goroutine's `onUpdate`/`onEvent` callback
+calls `p.Send(...)` with a typed message (`syscallDataMsg`,
+`latencyDataMsg`, `eventDataMsg`). Bubble Tea's runtime serializes all
+incoming messages through a single `Update()` call, so there's no need for
+additional locking despite three concurrent producers.
+
+### View switching
+
+`Model.active` tracks which of the three views (`ViewSyscalls`,
+`ViewLatency`, `ViewEvents`) is currently displayed. Key presses `1`/`2`/`3`
+set it directly; `Tab` cycles through all three. `View()` switches on
+`m.active` and delegates rendering to `renderSyscalls`/`renderLatency`/
+`renderEvents` in their respective `*_view.go` files.
+
+### Known limitation
+
+The Latency tab tracks exactly one syscall at a time, set via
+`--syscall` at startup (default: `read`). If the traced process rarely
+calls that syscall, the tab will show "(no data yet)" even though the
+Syscalls tab shows plenty of activity on other syscalls. Pick `--syscall`
+based on what the target workload actually does frequently.
+
+---
+
 ### Concurrency model
 
 ```
@@ -548,6 +614,7 @@ The 64-byte `payload` field covers the common cases (path prefix, flag values, a
 | `uretprobe`/`uprobe_pair` can crash Go target binaries | Go's stack-moving garbage collector can corrupt scheduler state when the kernel's return-probe trampoline fires mid-stack-growth | Use plain `uprobe` (entry-only) for Go targets; `uprobe_pair`/`uretprobe` are safe on C/C++/Rust binaries with fixed stacks |
 | No network packet capture | Not a replacement for tcpdump/XDP | Combine with `tcpdump` for network analysis |
 | Hardware PMU unavailable in VMs | `tracery bench` instruction-count mode doesn't work on VirtualBox/most cloud VMs | Use wall-clock mode (automatic fallback) or run on bare metal / KVM with `-cpu host,+pmu` |
+| Dashboard's Latency tab tracks only one syscall | `--syscall` must be set correctly for the target workload, or the tab shows "(no data yet)" | Check the Syscalls tab first to see which syscall is actually frequent, then restart with `--syscall <name>` |
 
 ---
 
